@@ -1,0 +1,12 @@
+[package]
+name = "rust-filo"
+version = "0.1.0"
+authors = ["Evan Chan <velvia@gmail.com>"]
+
+[dependencies]
+memoffset = "0.2"
+byteorder = "1"
+
+[lib]
+name = "rust_filo"
+crate-type = ["staticlib", "cdylib"]
