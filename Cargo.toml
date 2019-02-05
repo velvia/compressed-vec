@@ -1,5 +1,5 @@
 [package]
-name = "rust-filo"
+name = "rustfilo"
 version = "0.1.0"
 authors = ["Evan Chan <velvia@gmail.com>"]
 
@@ -7,6 +7,20 @@ authors = ["Evan Chan <velvia@gmail.com>"]
 memoffset = "0.2"
 byteorder = "1"
 
+[dev-dependencies]
+criterion = "^0.2"
+
+[[bench]]
+name = "bench"
+harness = false
+
+[profile.bench]
+opt-level = 3
+debug = true
+
+[profile.release]
+debug = true
+
 [lib]
-name = "rust_filo"
-crate-type = ["staticlib", "cdylib"]
+# NOTE: Type "cdylib" is for JVM integration;  "lib" is needed for benchmarks
+crate-type = ["staticlib", "cdylib", "lib"]

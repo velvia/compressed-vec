@@ -22,7 +22,7 @@ pub enum NibblePackError {
 /// # Return Value
 /// The number of bytes encoded, or an encoding error
 ///
-pub fn nibble_pack8(inputs: &[u64], out_buffer: &mut Vec<u8>) -> Result<u16, NibblePackError> {
+pub fn nibble_pack8(inputs: &[u64; 8], out_buffer: &mut Vec<u8>) -> Result<u16, NibblePackError> {
     if inputs.len() < 8 { return Err(NibblePackError::InputTooShort); }
 
     // reset the out_buffer...
@@ -35,18 +35,26 @@ pub fn nibble_pack8(inputs: &[u64], out_buffer: &mut Vec<u8>) -> Result<u16, Nib
             nonzero_mask |= 1 << i;
         }
     }
+    // inputs.into_iter().for_each(|&x| {
+    //     let bit = if x != 0u64 { 0x80u8 } else { 0u8 };
+    //     nonzero_mask >>= 1;
+    //     nonzero_mask |= bit;
+    // });
 
     out_buffer.push(nonzero_mask);
 
     // if no nonzero values, we're done!
     if nonzero_mask != 0 {  // TODO: use SIMD here
         // otherwise, get min of leading and trailing zeros, encode it
-        let mut min_leading_zeros = 64u32;
-        let mut min_trailing_zeros = 64u32;
-        for i in 0..8 {
-            min_leading_zeros = u32::min(min_leading_zeros, inputs[i].leading_zeros());
-            min_trailing_zeros = u32::min(min_trailing_zeros, inputs[i].trailing_zeros());
-        }
+        // NOTE: code below is actually slower than the iterator!  Fearless use of abstractions FTW!!!
+        // let mut min_leading_zeros = 64u32;
+        // let mut min_trailing_zeros = 64u32;
+        // for i in 0..8 {
+        //     min_leading_zeros = u32::min(min_leading_zeros, inputs[i].leading_zeros());
+        //     min_trailing_zeros = u32::min(min_trailing_zeros, inputs[i].trailing_zeros());
+        // }
+        let min_leading_zeros = inputs.into_iter().map(|x| x.leading_zeros()).min().unwrap();
+        let min_trailing_zeros = inputs.into_iter().map(|x| x.trailing_zeros()).min().unwrap();
 
         // Convert min leading/trailing to # nibbles.  Start packing!
         let trailing_nibbles = min_trailing_zeros / 4;
@@ -73,7 +81,8 @@ pub fn nibble_pack8(inputs: &[u64], out_buffer: &mut Vec<u8>) -> Result<u16, Nib
 /// # Arguments
 /// * `trailing_zero_nibbles` - the min # of trailing zero nibbles across all inputs
 /// * `num_nibbles` - the max # of nibbles having nonzero bits in all inputs
-fn pack_to_even_nibbles(inputs: &[u64],
+#[inline]
+fn pack_to_even_nibbles(inputs: &[u64; 8],
                         out_buffer: &mut Vec<u8>,
                         num_nibbles: u32,
                         trailing_zero_nibbles: u32) {
@@ -83,11 +92,9 @@ fn pack_to_even_nibbles(inputs: &[u64],
     let num_bytes_each = (num_nibbles / 2) as usize;
 
     // for each nonzero input, shift and write out exact # of bytes
-    for i in 0..8 {
-        if inputs[i] != 0 {
-            out_buffer.write_uint::<LittleEndian>(inputs[i] >> shift, num_bytes_each).unwrap();
-        }
-    }
+    inputs.into_iter().filter(|x| **x != 0)
+          // .for_each(|x| out_buffer.write_uint::<LittleEndian>(x >> shift, num_bytes_each).unwrap());
+          .for_each(|x| direct_write_uint_le(out_buffer, x >> shift, num_bytes_each));
 }
 
 /// Pack raw inputs when # nibbles is odd but < 8.  Lets us pack two inputs together.
@@ -97,7 +104,8 @@ fn pack_to_even_nibbles(inputs: &[u64],
 ///  - use slice.chunks(2) to return.  Can also use itertools.chunks() which gives you chunks method on iterators
 /// LOVE: how Rust extends existing tools like Vec Write API (byteorder), or itertools extends iter with chunks etc
 ///       as well as zero-cost abstractions
-fn pack_to_odd_nibbles1(inputs: &[u64],
+#[inline]
+fn pack_to_odd_nibbles1(inputs: &[u64; 8],
                         out_buffer: &mut Vec<u8>,
                         num_nibbles: u32,
                         trailing_zero_nibbles: u32) {
@@ -127,13 +135,15 @@ fn pack_to_odd_nibbles1(inputs: &[u64],
         }
 
         // write out both values together
-        out_buffer.write_uint::<LittleEndian>(packedword, bytespacked as usize).unwrap();
+        // out_buffer.write_uint::<LittleEndian>(packedword, bytespacked as usize).unwrap();
+        direct_write_uint_le(out_buffer, packedword, bytespacked as usize);
         i += 1;
     }
 }
 
 /// Pack raw inputs when # nibbles is odd but >= 8.
-fn pack_to_odd_nibbles2(inputs: &[u64],
+#[inline]
+fn pack_to_odd_nibbles2(inputs: &[u64; 8],
                         out_buffer: &mut Vec<u8>,
                         num_nibbles: u32,
                         trailing_zero_nibbles: u32) {
@@ -149,15 +159,15 @@ fn pack_to_odd_nibbles2(inputs: &[u64],
                 // mix first word + LSBits of second word together in 64 bits and write it out
                 // (because byteorder doesn't let us write out less than width of data)
                 let packedword = (a >> shift) | (b << word2_lshift);
-                out_buffer.write_u64::<LittleEndian>(packedword).unwrap();
+                direct_write_uint_le(out_buffer, packedword, 8);
 
                 // Now shift upper bits of second word and write those out only
                 let packedword = b >> word2_rshift;
-                out_buffer.write_uint::<LittleEndian>(packedword, (num_nibbles - 8) as usize).unwrap();
+                direct_write_uint_le(out_buffer, packedword, (num_nibbles - 8) as usize);
             },
             (Some(a), None)    => {   // Only need to pack the first word as its the last
                 let numbytes = (num_nibbles + 1) / 2;
-                out_buffer.write_uint::<LittleEndian>(a >> shift, numbytes as usize).unwrap();
+                direct_write_uint_le(out_buffer, a >> shift, numbytes as usize);
                 break;
             },
             (None,    None)    => break,
@@ -166,9 +176,30 @@ fn pack_to_odd_nibbles2(inputs: &[u64],
     }
 }
 
+/// Function to write a u64 to memory quickly using unaligned writes.  The Vec state/len is updated & capacity checked.
+/// Equivalent of sun.misc.Unsafe, but it checks Vec has enough space so in theory it should be safe
+/// It is 2-3x faster than the equivalent code from byteorder, which uses memcpy instead.
+/// TODO: write a method which works on multiple 64-bit inputs or partial inputs so the pointer state, reservation etc
+///       can be amortized and the below can be a cheaper write.
+#[inline]
+fn direct_write_uint_le(out_buffer: &mut Vec<u8>, value: u64, numbytes: usize) {
+    out_buffer.reserve(8);
+    unsafe {   // We have checked the capacity so this is OK
+        unsafe_write_uint_le(out_buffer, value, numbytes);
+    }
+}
+
+#[inline(always)]
+unsafe fn unsafe_write_uint_le(out_buffer: &mut Vec<u8>, value: u64, numbytes: usize) {
+    let cur_len = out_buffer.len();
+    let ptr = out_buffer.as_mut_ptr().offset(cur_len as isize) as *mut u64;
+    std::ptr::write_unaligned(ptr, value.to_le());
+    out_buffer.set_len(cur_len + numbytes);
+}
+
 #[test]
 fn nibblepack8_all_zeroes() {
-    let mut buf = Vec::with_capacity(1024);
+    let mut buf = Vec::with_capacity(512);
     let inputs = [0u64; 8];
     let res = nibble_pack8(&inputs, &mut buf);
     assert_eq!(res, Ok(1));
@@ -178,7 +209,10 @@ fn nibblepack8_all_zeroes() {
 #[test]
 fn nibblepack8_all_evennibbles() {
     // All 8 are nonzero, even # nibbles
-    let mut buf = Vec::with_capacity(1024);
+    let mut buf = Vec::with_capacity(512);
+    unsafe { buf.set_len(520) }
+    dbg!(buf.len());
+    dbg!(buf.capacity());
     let inputs = [0x0000_00fe_dcba_0000u64, 0x0000_0033_2211_0000u64,
                   0x0000_0044_3322_0000u64, 0x0000_0055_4433_0000u64,
                   0x0000_0066_5544_0000u64, 0x0000_0076_5432_0000u64,

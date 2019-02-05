@@ -1,7 +1,7 @@
 #[macro_use]
 extern crate memoffset;
 
-mod nibblepacking;
+pub mod nibblepacking;
 mod vector;
 
 #[no_mangle]

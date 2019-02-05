@@ -1,2 +1,5 @@
 /target
 **/*.rs.bk
+/out.stacks
+/*.svg
+/Cargo.lock
