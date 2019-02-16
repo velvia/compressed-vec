@@ -440,9 +440,13 @@ mod props {
     // Also input arrays of 8 with the given properties above.
     prop_compose! {
         /// zero_chance: 0..1.0 chance of obtaining a zero
-        fn arb_maybezero_nbits_u64(nbits: usize, zero_chance: f32)
-                                  (n in 0u64..(1 << nbits), chance in 0.0..(1.0/zero_chance)) -> u64 {
-            if chance <= 1.0 { 0 } else { n }
+        fn arb_maybezero_nbits_u64
+            (nbits: usize, zero_chance: f32)
+            (is_zero in prop::bool::weighted(zero_chance as f64),
+             n in 0u64..(1 << nbits))
+            -> u64
+        {
+            if is_zero { 0 } else { n }
         }
     }
 
