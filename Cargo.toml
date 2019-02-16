@@ -9,6 +9,7 @@ byteorder = "1"
 
 [dev-dependencies]
 criterion = "^0.2"
+proptest = "0.9.1"
 
 [[bench]]
 name = "bench"

@@ -4,7 +4,6 @@ extern crate byteorder;
 
 use self::byteorder::{ReadBytesExt, LittleEndian};
 
-
 #[derive(Debug, PartialEq)]
 pub enum NibblePackError {
     InputTooShort,
@@ -195,7 +194,11 @@ fn nibble_unpack8<'a, Output: Sink>(inbuf: &'a [u8], output: &mut Output) -> Res
         let num_bits = ((inbuf[1] >> 4) + 1) * 4;
         let trailing_zeros = (inbuf[1] & 0x0f) * 4;
         let total_bytes = 2 + (num_bits as u32 * nonzero_mask.count_ones() + 7) / 8;
-        let mask: u64 = (1u64 << num_bits) - 1u64;
+        let mask: u64 = if num_bits >= 64 {
+                            std::u64::MAX
+                        } else {
+                            (1u64 << num_bits) - 1u64
+                        };
         let mut buf_index = 2;
         let mut bit_cursor = 0;
 
@@ -424,4 +427,43 @@ fn unpack8_partial_oddnibbles() {
     assert_eq!(sink.vec[..], orig);
 }
 
-// TODO: look into Rust equivalent of Quickcheck for generating ... maybe when we have two-way encoding/decoding
+// NOTE: cfg(test) is needed so that proptest can just be a "dev-dependency" and not linked for final library
+// NOTE2: somehow cargo is happier when we put props tests in its own module
+#[cfg(test)]
+mod props {
+    extern crate proptest;
+
+    use super::*;
+    use self::proptest::prelude::*;
+
+    // Generators (Arb's) for numbers of given # bits with fractional chance of being zero.
+    // Also input arrays of 8 with the given properties above.
+    prop_compose! {
+        /// zero_chance: 0..1.0 chance of obtaining a zero
+        fn arb_maybezero_nbits_u64(nbits: usize, zero_chance: f32)
+                                  (n in 0u64..(1 << nbits), chance in 0.0..(1.0/zero_chance)) -> u64 {
+            if chance <= 1.0 { 0 } else { n }
+        }
+    }
+
+    // Try different # bits and # nonzero elements
+    prop_compose! {
+        fn arb_8longs_nbits()
+                           (nbits in 4usize..64, chance in 0.2f32..0.8)
+                           (input in prop::array::uniform8(arb_maybezero_nbits_u64(nbits, chance))) -> [u64; 8] {
+                               input
+                           }
+    }
+
+    proptest! {
+        #[test]
+        fn prop_pack_unpack_identity(input in arb_8longs_nbits()) {
+            let mut buf = Vec::with_capacity(256);
+            nibble_pack8(&input, &mut buf).expect("Should have encoded OK");
+
+            let mut sink = LongSink::new();
+            let res = nibble_unpack8(&buf[..], &mut sink);
+            assert_eq!(sink.vec[..], input);
+        }
+    }
+}
