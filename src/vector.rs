@@ -53,12 +53,6 @@ fn test_whole_length() {
     };
     assert_eq!(vect1.whole_length(), 104);
 
-    println!(
-        "Size of BinaryVector struct: {}",
-        mem::size_of::<BinaryVector>()
-    );
-    println!(
-        "Span of num_elements: {:?}",
-        span_of!(BinaryVector, num_elements)
-    )
+    println!("Size of BinaryVector struct: {}", mem::size_of::<BinaryVector>());
+    println!("Span of num_elements: {:?}", span_of!(BinaryVector, num_elements))
 }
