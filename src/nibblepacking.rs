@@ -9,22 +9,62 @@ pub enum NibblePackError {
     InputTooShort,
 }
 
+/// Packs a slice of u64 numbers that are increasing, using delta encoding.  That is, the delta between successive
+/// elements is encoded, rather than the absolute numbers.  The first number is encoded as is.
+///
+/// ## Numbers must be increasing
+/// This is currently only designed for the case where successive numbers are either the same or increasing
+/// (such as Prometheus-style increasing histograms).  If a successive input is less than the previous input,
+/// currently this method WILL CLIP and record the difference as 0.
+pub fn pack_u64_delta(inputs: &[u64], out_buffer: &mut Vec<u8>) {
+    let mut last = 0u64;
+    let deltas = inputs.into_iter().map(|&n| {
+        let delta = n.saturating_sub(last);
+        last = n;
+        delta
+    });
+    pack_u64(deltas, out_buffer)
+}
+
+/// Packs a stream of double-precision IEEE-754 / f64 numbers using XOR encoding.
+/// The first f64 is written as is; after that, each successive f64 is XORed with the previous one and the xor
+/// value is written, based on the premise that when changes are small so is the XORed value.
+/// Stream must have at least one value, otherwise InputTooShort is returned
+pub fn pack_f64_xor<I: Iterator<Item = f64>>(mut stream: I, out_buffer: &mut Vec<u8>) -> Result<(), NibblePackError> {
+    let mut last: u64 = match stream.next() {
+        Some(num) => {
+            let num_bits = num.to_bits();
+            direct_write_uint_le(out_buffer, num_bits, 8);
+            num_bits
+        },
+        None      => return Err(NibblePackError::InputTooShort)
+    };
+    pack_u64(stream.map(|f| {
+        let f_bits = f.to_bits();
+        let delta = last ^ f_bits;
+        last = f_bits;
+        delta
+    }), out_buffer);
+    Ok(())
+}
+
+
 ///
 /// Packs a stream of plain u64 numbers using NibblePacking.  This is especially powerful when combined with
 /// other packers which can do for example delta or floating point XOR or other kinds of encoding which reduces
 /// the # of bits needed and produces many zeroes.  This is why an Iterator is used for the API, as soures will
 /// typically transform the incoming data by reducing the bits needed.
+/// This method does no transformations to the input data.  You might want one of the other pack_* methods.
 /// NOTE: The NibblePack algorithm always packs 8 u64's at a time.  If the length of the input stream is not
 /// divisible by 8, extra 0 values pad the input.
 // TODO: should this really be a function, or maybe a struct with more methods?
 // TODO: also benchmark this vs just reading from a slice of u64's
 #[inline]
-pub fn pack_u64<'a, I>(stream: I, out_buffer: &mut Vec<u8>)
-    where I: Iterator<Item = &'a u64> {
+pub fn pack_u64<I: Iterator<Item = u64>>(stream: I, out_buffer: &mut Vec<u8>) {
     let mut in_buffer = [0u64; 8];
     let mut bufindex = 0;
     for num in stream {
-        in_buffer[bufindex] = *num;
+        in_buffer[bufindex] = num;
         bufindex += 1;
         if bufindex >= 8 {
             // input buffer is full, encode!
@@ -45,6 +85,7 @@ pub fn pack_u64<'a, I>(stream: I, out_buffer: &mut Vec<u8>)
 ///
 /// NibblePacking is an encoding technique for packing 8 u64's tightly into the same number of nibbles.
 /// It can be combined with a prediction algorithm to efficiency encode floats and long values.
+/// This is really an inner function; the intention is for the user to use one of the higher level pack* methods.
 /// Please see http://github.com/filodb/FiloDB/doc/compression.md for more answers.
 ///
 /// # Arguments
@@ -190,6 +231,7 @@ pub trait Sink {
     fn process(&mut self, data: u64);
 }
 
+/// A super-simple Sink which just appends to a Vec<u64>
 pub struct LongSink {
     vec: Vec<u64>,
 }
@@ -205,6 +247,29 @@ impl LongSink {
 impl Sink for LongSink {
     fn process(&mut self, data: u64) {
         self.vec.push(data);
+    }
+}
+
+/// A Sink which accumulates delta-encoded NibblePacked data back into increasing u64 numbers
+pub struct DeltaSink {
+    acc: u64,
+    sink: LongSink,
+}
+
+impl DeltaSink {
+    fn new(inner_sink: LongSink) -> DeltaSink {
+        DeltaSink { acc: 0, sink: inner_sink }
+    }
+
+    fn new_default() -> DeltaSink {
+        DeltaSink::new(LongSink::new())
+    }
+}
+
+impl Sink for DeltaSink {
+    fn process(&mut self, data: u64) {
+        self.acc += data;
+        self.sink.process(self.acc);
     }
 }
 
@@ -485,18 +550,6 @@ fn unpack8_4nibbles_allfull() {
 }
 
 #[test]
-fn pack_unpack_u64_plain() {
-    let inputs = [0u64, 1000, 1001, 1002, 1003, 2005, 2010, 3034, 4045, 5056, 6067, 7078];
-    let mut buf = Vec::with_capacity(1024);
-    pack_u64(inputs.into_iter(), &mut buf);
-
-    let mut sink = LongSink::new();
-    let res = unpack(&buf[..], &mut sink, inputs.len());
-    assert_eq!(res.unwrap().len(), 0);
-    assert_eq!(sink.vec[..inputs.len()], inputs);
-}
-
-#[test]
 fn unpack8_partial_oddnibbles() {
     let compressed = [
         0b0011_1110u8, // only some bits on
@@ -518,6 +571,34 @@ fn unpack8_partial_oddnibbles() {
     ];
 
     assert_eq!(sink.vec[..], orig);
+}
+
+#[test]
+fn pack_unpack_u64_plain() {
+    let inputs = [0u64, 1000, 1001, 1002, 1003, 2005, 2010, 3034, 4045, 5056, 6067, 7078];
+    let mut buf = Vec::with_capacity(1024);
+    // NOTE: into_iter() of an array returns an Iterator<Item = &u64>, cloned() is needed to convert back to u64
+    pack_u64(inputs.into_iter().cloned(), &mut buf);
+    println!("Packed {} u64 inputs (plain) into {} bytes", inputs.len(), buf.len());
+
+    let mut sink = LongSink::new();
+    let res = unpack(&buf[..], &mut sink, inputs.len());
+    assert_eq!(res.unwrap().len(), 0);
+    assert_eq!(sink.vec[..inputs.len()], inputs);
+}
+
+#[test]
+fn pack_unpack_u64_deltas() {
+    let inputs = [0u64, 1000, 1001, 1002, 1003, 2005, 2010, 3034, 4045, 5056, 6067, 7078];
+    let mut buf = Vec::with_capacity(1024);
+    // NOTE: into_iter() of an array returns an Iterator<Item = &u64>, cloned() is needed to convert back to u64
+    pack_u64_delta(&inputs[..], &mut buf);
+    println!("Packed {} u64 inputs (delta) into {} bytes", inputs.len(), buf.len());
+
+    let mut sink = DeltaSink::new_default();
+    let res = unpack(&buf[..], &mut sink, inputs.len());
+    assert_eq!(res.unwrap().len(), 0);
+    assert_eq!(sink.sink.vec[..inputs.len()], inputs);
 }
 
 // NOTE: cfg(test) is needed so that proptest can just be a "dev-dependency" and not linked for final library
@@ -549,7 +630,20 @@ mod props {
                            (nbits in 4usize..64, chance in 0.2f32..0.8)
                            (input in prop::array::uniform8(arb_maybezero_nbits_u64(nbits, chance))) -> [u64; 8] {
                                input
-                           }
+        }
+    }
+
+    // Generate variable length increasing/deltas u64's
+    prop_compose! {
+        fn arb_varlen_deltas()
+                            (nbits in 4usize..32, chance in 0.2f32..0.8)
+                            (mut v in proptest::collection::vec(arb_maybezero_nbits_u64(nbits, chance), 2..64)) -> Vec<u64> {
+            for i in 1..v.len() {
+                // make numbers increasing
+                v[i] = v[i - 1] + v[i];
+            }
+            v
+        }
     }
 
     proptest! {
@@ -561,6 +655,15 @@ mod props {
             let mut sink = LongSink::new();
             let res = nibble_unpack8(&buf[..], &mut sink);
             assert_eq!(sink.vec[..], input);
+        }
+
+        #[test]
+        fn prop_delta_u64s_packing(input in arb_varlen_deltas()) {
+            let mut buf = Vec::with_capacity(1024);
+            pack_u64_delta(&input[..], &mut buf);
+            let mut sink = DeltaSink::new_default();
+            let res = unpack(&buf[..], &mut sink, input.len());
+            assert_eq!(sink.sink.vec[..input.len()], input[..]);
         }
     }
 }
