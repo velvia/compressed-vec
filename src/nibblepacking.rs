@@ -50,11 +50,19 @@ pub fn pack_f64_xor<I: Iterator<Item = f64>>(mut stream: I, out_buffer: &mut Vec
 
 
 ///
-/// Packs a stream of plain u64 numbers using NibblePacking.  This is especially powerful when combined with
+/// Packs a stream of plain u64 numbers using NibblePacking.
+///
+/// This is especially powerful when combined with
 /// other packers which can do for example delta or floating point XOR or other kinds of encoding which reduces
-/// the # of bits needed and produces many zeroes.  This is why an Iterator is used for the API, as soures will
+/// the # of bits needed and produces many zeroes.  This is why an Iterator is used for the API, as sources will
 /// typically transform the incoming data by reducing the bits needed.
 /// This method does no transformations to the input data.  You might want one of the other pack_* methods.
+///
+/// ```
+///     let inputs = [0u64, 1000, 1001, 1002, 1003, 2005, 2010, 3034, 4045, 5056, 6067, 7078];
+///     let mut buf = Vec::with_capacity(1024);
+///     pack_u64(inputs.into_iter().cloned(), &mut buf);
+/// ```
 /// NOTE: The NibblePack algorithm always packs 8 u64's at a time.  If the length of the input stream is not
 /// divisible by 8, extra 0 values pad the input.
 // TODO: should this really be a function, or maybe a struct with more methods?
@@ -63,6 +71,7 @@ pub fn pack_f64_xor<I: Iterator<Item = f64>>(mut stream: I, out_buffer: &mut Vec
 pub fn pack_u64<I: Iterator<Item = u64>>(stream: I, out_buffer: &mut Vec<u8>) {
     let mut in_buffer = [0u64; 8];
     let mut bufindex = 0;
+    // NOTE: using pointer math is actually NOT any faster!
     for num in stream {
         in_buffer[bufindex] = num;
         bufindex += 1;
@@ -228,10 +237,12 @@ unsafe fn unsafe_write_uint_le(out_buffer: &mut Vec<u8>, value: u64, numbytes: u
 ///
 /// A trait for processing data during unpacking.  Used to combine with predictors to create final output.
 pub trait Sink {
+    #[inline]
     fn process(&mut self, data: u64);
 }
 
 /// A super-simple Sink which just appends to a Vec<u64>
+#[derive(Debug)]
 pub struct LongSink {
     vec: Vec<u64>,
 }
@@ -239,41 +250,84 @@ pub struct LongSink {
 const DEFAULT_CAPACITY: usize = 64;
 
 impl LongSink {
-    fn new() -> LongSink {
+    pub fn new() -> LongSink {
         LongSink { vec: Vec::with_capacity(DEFAULT_CAPACITY) }
+    }
+
+    pub fn clear(&mut self) {
+        self.vec.clear()
     }
 }
 
 impl Sink for LongSink {
+    #[inline]
     fn process(&mut self, data: u64) {
         self.vec.push(data);
     }
 }
 
 /// A Sink which accumulates delta-encoded NibblePacked data back into increasing u64 numbers
+#[derive(Debug)]
 pub struct DeltaSink {
     acc: u64,
     sink: LongSink,
 }
 
 impl DeltaSink {
-    fn new(inner_sink: LongSink) -> DeltaSink {
+    pub fn with_sink(inner_sink: LongSink) -> DeltaSink {
         DeltaSink { acc: 0, sink: inner_sink }
     }
 
-    fn new_default() -> DeltaSink {
-        DeltaSink::new(LongSink::new())
+    pub fn new() -> DeltaSink {
+        DeltaSink::with_sink(LongSink::new())
+    }
+
+    /// Resets the state of the sink so it can be re-used for another unpack
+    pub fn clear(&mut self) {
+        self.acc = 0;
+        self.sink.clear()
     }
 }
 
 impl Sink for DeltaSink {
+    #[inline]
     fn process(&mut self, data: u64) {
         self.acc += data;
         self.sink.process(self.acc);
     }
 }
 
-/// Convenience function to unpack numValues values from the stream, by calling nibble_unpack8 enough times.
+/// A sink which uses simple successive XOR encoding to decode a NibblePacked floating point stream
+/// encoded using [`pack_f64_xor`]: #method.pack_f64_xor
+#[derive(Debug)]
+pub struct DoubleXorSink {
+    last: u64,
+    vec: Vec<f64>,
+}
+
+impl DoubleXorSink {
+    /// Creates a new DoubleXorSink with a vec which is owned by this struct.
+    pub fn new(the_vec: Vec<f64>) -> DoubleXorSink {
+        DoubleXorSink { last: 0, vec: the_vec }
+    }
+
+    fn reset(&mut self, init_value: u64) {
+        self.vec.clear();
+        self.vec.push(f64::from_bits(init_value));
+        self.last = init_value;
+    }
+}
+
+impl Sink for DoubleXorSink {
+    fn process(&mut self, data: u64) {
+        // XOR new piece of data with last, which yields original value
+        let numbits = self.last ^ data;
+        self.vec.push(f64::from_bits(numbits));
+        self.last = numbits;
+    }
+}
+
+/// Unpacks num_values values from an encoded buffer, by calling nibble_unpack8 enough times.
 /// The output.process() method is called numValues times rounded up to the next multiple of 8.
 /// Returns "remainder" byteslice or unpacking error (say if one ran out of space)
 ///
@@ -281,18 +335,44 @@ impl Sink for DeltaSink {
 /// * `inbuf` - NibblePacked compressed byte slice containing "remaining" bytes, starting with bitmask byte
 /// * `output` - a Trait which processes each resulting u64
 /// * `num_values` - the number of u64 values to decode
-fn unpack<'a, Output: Sink>(
-    inbuf: &'a [u8],
+#[inline]
+pub fn unpack<'a, Output: Sink>(
+    encoded: &'a [u8],
     output: &mut Output,
     num_values: usize,
 ) -> Result<&'a [u8], NibblePackError> {
     let mut values_left = num_values as isize;
-    let mut bufref = inbuf;
+    let mut inbuf = encoded;
     while values_left > 0 {
-        bufref = nibble_unpack8(bufref, output)?;
+        inbuf = nibble_unpack8(inbuf, output)?;
         values_left -= 8;
     }
-    Ok(bufref)
+    Ok(inbuf)
+}
+
+/// Unpacks a buffer encoded with [`pack_f64_xor`]: #method.pack_f64_xor
+///
+/// This wraps unpack() method with a read of the initial f64 value. InputTooShort error is returned
+/// if the input does not have enough bytes given the number of values read.
+/// NOTE: the sink is automatically cleared at the beginning.
+///
+/// ```
+///     let mut out = Vec::<f64>::with_capacity(64);
+///     let mut sink = DoubleXorSink::new(out);
+///     let res = unpack_f64_xor(&buf[..], &mut sink, inputs.len());
+/// ```
+pub fn unpack_f64_xor<'a>(encoded: &'a [u8],
+                          sink: &mut DoubleXorSink,
+                          num_values: usize) -> Result<&'a [u8], NibblePackError> {
+    if (encoded.len() < 8) {
+        Err(NibblePackError::InputTooShort)
+    } else {
+        assert!(num_values >= 1);
+        let init_value = direct_read_uint_le(encoded, 0);
+        sink.reset(init_value);
+
+        unpack(&encoded[8..], sink, num_values - 1)
+    }
 }
 
 /// Unpacks 8 u64's packed using nibble_pack8 by calling the output.process() method 8 times, once for each encoded
@@ -370,6 +450,7 @@ fn nibble_unpack8<'a, Output: Sink>(
 
 /// Safe but fast read from inbuf.  If it can read 64 bits then uses fast unaligned read, otherwise
 /// uses byteorder crate.  Also does Endianness conversion.
+#[inline(always)]
 fn direct_read_uint_le(inbuf: &[u8], index: u32) -> u64 {
     if ((index as usize) + 8) <= inbuf.len() {
         unsafe {
@@ -595,10 +676,24 @@ fn pack_unpack_u64_deltas() {
     pack_u64_delta(&inputs[..], &mut buf);
     println!("Packed {} u64 inputs (delta) into {} bytes", inputs.len(), buf.len());
 
-    let mut sink = DeltaSink::new_default();
+    let mut sink = DeltaSink::new();
     let res = unpack(&buf[..], &mut sink, inputs.len());
     assert_eq!(res.unwrap().len(), 0);
     assert_eq!(sink.sink.vec[..inputs.len()], inputs);
+}
+
+#[test]
+fn pack_unpack_f64_xor() {
+    let inputs = [0f64, 0.5, 2.5, 10., 25., 100.];
+    let mut buf = Vec::with_capacity(512);
+    pack_f64_xor(inputs.into_iter().cloned(), &mut buf);
+    println!("Packed {} f64 inputs (XOR) into {} bytes", inputs.len(), buf.len());
+
+    let mut out = Vec::<f64>::with_capacity(64);
+    let mut sink = DoubleXorSink::new(out);
+    let res = unpack_f64_xor(&buf[..], &mut sink, inputs.len());
+    assert_eq!(res.unwrap().len(), 0);
+    assert_eq!(sink.vec[..inputs.len()], inputs);
 }
 
 // NOTE: cfg(test) is needed so that proptest can just be a "dev-dependency" and not linked for final library
@@ -661,7 +756,7 @@ mod props {
         fn prop_delta_u64s_packing(input in arb_varlen_deltas()) {
             let mut buf = Vec::with_capacity(1024);
             pack_u64_delta(&input[..], &mut buf);
-            let mut sink = DeltaSink::new_default();
+            let mut sink = DeltaSink::new();
             let res = unpack(&buf[..], &mut sink, input.len());
             assert_eq!(sink.sink.vec[..input.len()], input[..]);
         }
