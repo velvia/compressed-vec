@@ -2,6 +2,7 @@
 extern crate memoffset;
 
 pub mod nibblepacking;
+pub mod byteutils;
 mod vector;
 
 #[no_mangle]

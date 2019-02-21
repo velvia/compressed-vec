@@ -1,8 +1,6 @@
 #![allow(unused)] // needed for dbg!() macro, but folks say this should not be needed
 
-extern crate byteorder;
-
-use self::byteorder::{LittleEndian, ReadBytesExt};
+use byteutils::*;
 
 #[derive(Debug, PartialEq)]
 pub enum NibblePackError {
@@ -213,33 +211,20 @@ fn pack_universal(
     }
 }
 
-/// Function to write a u64 to memory quickly using unaligned writes.  The Vec state/len is updated & capacity checked.
-/// Equivalent of sun.misc.Unsafe, but it checks Vec has enough space so in theory it should be safe
-/// It is 2-3x faster than the equivalent code from byteorder, which uses memcpy instead.
-/// TODO: write a method which works on multiple 64-bit inputs or partial inputs so the pointer state, reservation etc
-///       can be amortized and the below can be a cheaper write.
-#[inline]
-fn direct_write_uint_le(out_buffer: &mut Vec<u8>, value: u64, numbytes: usize) {
-    out_buffer.reserve(8);
-    unsafe {
-        // We have checked the capacity so this is OK
-        unsafe_write_uint_le(out_buffer, value, numbytes);
-    }
-}
-
-#[inline(always)]
-unsafe fn unsafe_write_uint_le(out_buffer: &mut Vec<u8>, value: u64, numbytes: usize) {
-    let cur_len = out_buffer.len();
-    let ptr = out_buffer.as_mut_ptr().offset(cur_len as isize) as *mut u64;
-    std::ptr::write_unaligned(ptr, value.to_le());
-    out_buffer.set_len(cur_len + numbytes);
-}
-
 ///
 /// A trait for processing data during unpacking.  Used to combine with predictors to create final output.
 pub trait Sink {
+    /// Called to reserve space for safely writing a number of items, perhaps in bulk.
+    /// For example may be used to reserve space in a Vec to ensure individual process() methods can proceed quickly.
+    fn reserve(&mut self, num_items: usize);
+
+    /// The process method processes output, assuming space has been reserved using reserve()
     #[inline]
     fn process(&mut self, data: u64);
+
+    /// Processes 8 items all having the same value.  Bulk process method for faster decoding.
+    #[inline]
+    fn process8(&mut self, data: u64);
 }
 
 /// A super-simple Sink which just appends to a Vec<u64>
@@ -262,8 +247,18 @@ impl LongSink {
 
 impl Sink for LongSink {
     #[inline]
+    fn reserve(&mut self, num_items: usize) {
+        self.vec.reserve(num_items)
+    }
+
+    #[inline]
     fn process(&mut self, data: u64) {
-        self.vec.push(data);
+        unsafe { unchecked_write_u64_u64_le(&mut self.vec, data) }
+    }
+
+    #[inline]
+    fn process8(&mut self, data: u64) {
+        write8_u64_le(&mut self.vec, data)
     }
 }
 
@@ -292,9 +287,20 @@ impl DeltaSink {
 
 impl Sink for DeltaSink {
     #[inline]
+    fn reserve(&mut self, num_items: usize) {
+        self.sink.reserve(num_items)
+    }
+
+    #[inline]
     fn process(&mut self, data: u64) {
         self.acc += data;
         self.sink.process(self.acc);
+    }
+
+    #[inline]
+    fn process8(&mut self, data: u64) {
+        self.acc += data;
+        self.sink.process8(self.acc)
     }
 }
 
@@ -321,11 +327,27 @@ impl DoubleXorSink {
 
 impl Sink for DoubleXorSink {
     #[inline]
+    fn reserve(&mut self, num_items: usize) {
+        self.vec.reserve(num_items)
+    }
+
+    // TODO: use optimized write methods in byteutils
+    #[inline]
     fn process(&mut self, data: u64) {
         // XOR new piece of data with last, which yields original value
         let numbits = self.last ^ data;
         self.vec.push(f64::from_bits(numbits));
         self.last = numbits;
+    }
+
+    #[inline]
+    fn process8(&mut self, data: u64) {
+        // XOR new piece of data with last, which yields original value
+        let numbits = self.last ^ data;
+        self.last = numbits;
+        for _ in 0..8 {
+            self.vec.push(f64::from_bits(numbits));
+        }
     }
 }
 
@@ -397,9 +419,7 @@ fn nibble_unpack8<'a, Output: Sink>(
     let nonzero_mask = inbuf[0];
     if nonzero_mask == 0 {
         // All 8 words are 0; skip further processing
-        for _ in 0..8 {
-            output.process(0);
-        }
+        output.process8(0);
         Ok(&inbuf[1..])
     } else {
         let num_bits = ((inbuf[1] >> 4) + 1) * 4;
@@ -412,6 +432,8 @@ fn nibble_unpack8<'a, Output: Sink>(
         // Read in first word
         let mut in_word = direct_read_uint_le(inbuf, buf_index);
         buf_index += 8;
+
+        output.reserve(8);
 
         for bit in 0..8 {
             if (nonzero_mask & (1 << bit)) != 0 {
@@ -449,24 +471,6 @@ fn nibble_unpack8<'a, Output: Sink>(
         // Return the "remaining slice" - the rest of input buffer after we've parsed our bytes.
         // This allows for easy and clean chaining of nibble_unpack8 calls with no mutable state
         Ok(&inbuf[(total_bytes as usize)..])
-    }
-}
-
-/// Safe but fast read from inbuf.  If it can read 64 bits then uses fast unaligned read, otherwise
-/// uses byteorder crate.  Also does Endianness conversion.
-#[inline(always)]
-fn direct_read_uint_le(inbuf: &[u8], index: u32) -> u64 {
-    if ((index as usize) + 8) <= inbuf.len() {
-        unsafe {
-            let ptr = inbuf.as_ptr().offset(index as isize) as *const u64;
-            u64::from_le(std::ptr::read_unaligned(ptr))
-        }
-    } else {
-        // Less than 8 bytes left.  Use Byteorder implementation which can read limited # of bytes.
-        // This ensures we don't read from a space we are not allowed to.
-        let mut cursor = std::io::Cursor::new(inbuf);
-        cursor.set_position(index as u64);
-        cursor.read_uint::<LittleEndian>(inbuf.len() - index as usize).unwrap()
     }
 }
 
