@@ -59,9 +59,10 @@ pub fn pack_f64_xor<I: Iterator<Item = f64>>(mut stream: I, out_buffer: &mut Vec
 /// This method does no transformations to the input data.  You might want one of the other pack_* methods.
 ///
 /// ```
+/// # use rustfilo::nibblepacking;
 ///     let inputs = [0u64, 1000, 1001, 1002, 1003, 2005, 2010, 3034, 4045, 5056, 6067, 7078];
 ///     let mut buf = Vec::with_capacity(1024);
-///     pack_u64(inputs.into_iter().cloned(), &mut buf);
+///     nibblepacking::pack_u64(inputs.into_iter().cloned(), &mut buf);
 /// ```
 /// NOTE: The NibblePack algorithm always packs 8 u64's at a time.  If the length of the input stream is not
 /// divisible by 8, extra 0 values pad the input.
@@ -319,6 +320,7 @@ impl DoubleXorSink {
 }
 
 impl Sink for DoubleXorSink {
+    #[inline]
     fn process(&mut self, data: u64) {
         // XOR new piece of data with last, which yields original value
         let numbits = self.last ^ data;
@@ -357,9 +359,11 @@ pub fn unpack<'a, Output: Sink>(
 /// NOTE: the sink is automatically cleared at the beginning.
 ///
 /// ```
+/// # use rustfilo::nibblepacking;
+/// # let encoded = [0xffu8; 16];
 ///     let mut out = Vec::<f64>::with_capacity(64);
-///     let mut sink = DoubleXorSink::new(out);
-///     let res = unpack_f64_xor(&buf[..], &mut sink, inputs.len());
+///     let mut sink = nibblepacking::DoubleXorSink::new(out);
+///     let res = nibblepacking::unpack_f64_xor(&encoded[..], &mut sink, 16);
 /// ```
 pub fn unpack_f64_xor<'a>(encoded: &'a [u8],
                           sink: &mut DoubleXorSink,
