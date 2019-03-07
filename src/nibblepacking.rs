@@ -479,6 +479,7 @@ fn nibblepack8_all_zeroes() {
     let mut buf = Vec::with_capacity(512);
     let inputs = [0u64; 8];
     nibble_pack8(&inputs, &mut buf);
+    dbg!(is_x86_feature_detected!("avx2"));
     assert_eq!(buf.len(), 1);
     assert_eq!(buf[..], [0u8]);
 }
@@ -739,7 +740,7 @@ mod props {
     // Generate variable length increasing/deltas u64's
     prop_compose! {
         fn arb_varlen_deltas()
-                            (nbits in 4usize..32, chance in 0.2f32..0.8)
+                            (nbits in 4usize..48, chance in 0.2f32..0.8)
                             (mut v in proptest::collection::vec(arb_maybezero_nbits_u64(nbits, chance), 2..64)) -> Vec<u64> {
             for i in 1..v.len() {
                 // make numbers increasing
