@@ -1,6 +1,6 @@
 #![allow(unused)] // needed for dbg!() macro, but folks say this should not be needed
 
-use byteutils::*;
+use crate::byteutils::*;
 
 #[derive(Debug, PartialEq)]
 pub enum NibblePackError {
