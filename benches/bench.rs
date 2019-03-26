@@ -36,7 +36,7 @@ fn nibblepack8_varnumbits(c: &mut Criterion) {
             buf.clear();
             nibblepacking::nibble_pack8(&inputbuf, &mut buf)
         })
-    }, &[8, 16, 20, 24, 32]);
+    }, &[8, 12, 16, 20, 24, 32]);
 }
 
 fn make_nonzeroes_u64x64(num_nonzeroes: usize) -> [u64; 64] {
@@ -82,7 +82,8 @@ fn unpack_delta_u64s(c: &mut Criterion) {
     });
 }
 
-criterion_group!(benches, nibblepack8_varlen,
+criterion_group!(benches, //nibblepack8_varlen,
+                          nibblepack8_varnumbits,
                           pack_delta_u64s_varlen,
                           unpack_delta_u64s);
 criterion_main!(benches);

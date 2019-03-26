@@ -115,15 +115,13 @@ pub fn nibble_pack8(inputs: &[u64; 8], out_buffer: &mut Vec<u8>) {
     if nonzero_mask != 0 {
         // TODO: use SIMD here
         // otherwise, get min of leading and trailing zeros, encode it
-        // NOTE: code below is actually slower than the iterator!  Fearless use of abstractions FTW!!!
-        // let mut min_leading_zeros = 64u32;
-        // let mut min_trailing_zeros = 64u32;
-        // for i in 0..8 {
-        //     min_leading_zeros = u32::min(min_leading_zeros, inputs[i].leading_zeros());
-        //     min_trailing_zeros = u32::min(min_trailing_zeros, inputs[i].trailing_zeros());
-        // }
         let min_leading_zeros = inputs.into_iter().map(|x| x.leading_zeros()).min().unwrap();
         let min_trailing_zeros = inputs.into_iter().map(|x| x.trailing_zeros()).min().unwrap();
+        // Below impl seems to be equally fast, though it generates much more efficient code and SHOULD be much faster
+        // let mut ored_bits = 0u64;
+        // inputs.into_iter().for_each(|&x| ored_bits |= x);
+        // let min_leading_zeros = ored_bits.leading_zeros();
+        // let min_trailing_zeros = ored_bits.trailing_zeros();
 
         // Convert min leading/trailing to # nibbles.  Start packing!
         // NOTE: num_nibbles cannot be 0; that would imply every input was zero
