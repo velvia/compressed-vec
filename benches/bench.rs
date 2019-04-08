@@ -1,9 +1,9 @@
 #[macro_use]
 extern crate criterion;
-extern crate rustfilo;
+extern crate compressed_vec;
 
 use criterion::Criterion;
-use rustfilo::nibblepacking;
+use compressed_vec::nibblepacking;
 
 fn nibblepack8_varlen(c: &mut Criterion) {
     // This method from Criterion allows us to run benchmarks and vary some variable.

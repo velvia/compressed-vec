@@ -1,5 +1,5 @@
 [package]
-name = "rustfilo"
+name = "compressed_vec"
 version = "0.1.0"
 authors = ["Evan Chan <velvia@gmail.com>"]
 edition = "2018"
