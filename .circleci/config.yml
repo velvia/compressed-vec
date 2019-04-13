@@ -8,7 +8,7 @@ jobs:
       # and replace here. I put my own image here for
       # the example.
       # - image: abronan/rust-circleci:latest
-      - image: rust:1.33.0
+      - image: liuchong/rustup:all
 
     environment:
       # Set your codecov token if your repository is private.
@@ -24,18 +24,18 @@ jobs:
       #     command: |
       #       rustfmt --version
       #       cargo fmt -- --write-mode=diff
-      # - run:
-      #     name: Nightly Build
-      #     command: |
-      #       rustup run nightly rustc --version --verbose
-      #       rustup run nightly cargo --version --verbose
-      #       rustup run nightly cargo build
+      - run:
+          name: Nightly Build
+          command: |
+            rustup run nightly rustc --version --verbose
+            rustup run nightly cargo --version --verbose
+            rustup run nightly cargo build --release
       - run:
           name: Stable Build
           command: |
             rustup run stable rustc --version --verbose
             rustup run stable cargo --version --verbose
-            rustup run stable cargo build
+            rustup run stable cargo build --release
       - run:
           name: Test
           command: rustup run stable cargo test
