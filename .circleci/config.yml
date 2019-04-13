@@ -33,12 +33,12 @@ jobs:
       - run:
           name: Stable Build
           command: |
-            rustup run stable rustc --version --verbose
-            rustup run stable cargo --version --verbose
-            rustup run stable cargo build --release
+            rustc --version --verbose
+            cargo --version --verbose
+            cargo build --release
       - run:
           name: Test
-          command: rustup run stable cargo test
+          command: cargo test
       - run:
           name: Upload Coverage
           command: ./scripts/codecov.sh
