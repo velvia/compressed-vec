@@ -39,9 +39,6 @@ jobs:
       - run:
           name: Test
           command: cargo test
-      - run:
-          name: Upload Coverage
-          command: ./scripts/codecov.sh
       - save_cache:
           key: project-cache
           paths:
