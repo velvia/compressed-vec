@@ -57,7 +57,7 @@ pub fn pack_f64_xor<I: Iterator<Item = f64>>(mut stream: I, out_buffer: &mut Vec
 /// This method does no transformations to the input data.  You might want one of the other pack_* methods.
 ///
 /// ```
-/// # use rustfilo::nibblepacking;
+/// # use compressed_vec::nibblepacking;
 ///     let inputs = [0u64, 1000, 1001, 1002, 1003, 2005, 2010, 3034, 4045, 5056, 6067, 7078];
 ///     let mut buf = Vec::with_capacity(1024);
 ///     nibblepacking::pack_u64(inputs.into_iter().cloned(), &mut buf);
@@ -379,7 +379,7 @@ pub fn unpack<'a, Output: Sink>(
 /// NOTE: the sink is automatically cleared at the beginning.
 ///
 /// ```
-/// # use rustfilo::nibblepacking;
+/// # use compressed_vec::nibblepacking;
 /// # let encoded = [0xffu8; 16];
 ///     let mut out = Vec::<f64>::with_capacity(64);
 ///     let mut sink = nibblepacking::DoubleXorSink::new(out);
