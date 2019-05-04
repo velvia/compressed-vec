@@ -349,6 +349,98 @@ impl Sink for DoubleXorSink {
     }
 }
 
+///
+/// A sink used for increasing histogram counters.  In one shot:
+/// - Unpacks a delta-encoded NibblePack compressed Histogram
+/// - Subtracts the values from lastHistValues, noting if the difference is not >= 0 (means counter reset)
+/// - Packs the subtracted values
+/// - Updates lastHistValues to the latest unpacked values so this sink can be used again
+///
+/// Meant to be used again and again to parse next histogram, thus the last_hist_deltas
+/// state is reused to compute the next set of deltas.
+/// If the new set of values is less than last_hist_deltas then the new set of values is
+/// encoded instead of the diffs.
+/// For more details, see the "2D Delta" section in [compression.md](doc/compression.md)
+#[derive(Default)]
+#[derive(Debug)]
+struct DeltaDiffPackSink {
+    value_dropped: bool,
+    i: usize,
+    last_hist_deltas: Vec<u64>,
+    pack_array: [u64; 8],
+    out_vec: Vec<u8>,
+}
+
+impl DeltaDiffPackSink {
+    /// Creates new DeltaDiffPackSink, transferring ownership of out_vec
+    pub fn new(num_buckets: usize, out_vec: Vec<u8>) -> DeltaDiffPackSink {
+        let mut last_hist_deltas = Vec::<u64>::with_capacity(num_buckets);
+        last_hist_deltas.resize(num_buckets, 0);
+        DeltaDiffPackSink { last_hist_deltas, out_vec, ..Default::default() }
+    }
+
+    // Resets everythin, even the out_vec.  Probably should be used only for testing
+    #[inline]
+    fn reset(&mut self) {
+        self.i = 0;
+        self.value_dropped = false;
+        for elem in self.last_hist_deltas.iter_mut() {
+            *elem = 0;
+        }
+    }
+
+    /// Call this to finish packing the remainder of the deltas and reset for next go
+    #[inline]
+    pub fn finish(&mut self) {
+        // TODO: move this to a pack_remainder function?
+        if self.i != 0 {
+            for j in self.i..8 {
+                self.pack_array[j] = 0;
+            }
+            nibble_pack8(&self.pack_array, &mut self.out_vec);
+        }
+        self.i = 0;
+        self.value_dropped = false;
+    }
+}
+
+impl Sink for DeltaDiffPackSink {
+    #[inline]
+    fn reserve(&mut self, num_items: usize) {}
+
+    #[inline]
+    fn process(&mut self, data: u64) {
+        if self.i < self.last_hist_deltas.len() {
+            let last_value = self.last_hist_deltas[self.i];
+            // If data dropped from last, write data instead of diff
+            if data < last_value {
+                self.value_dropped = true;
+                self.pack_array[self.i % 8] = data;
+            } else {
+                self.pack_array[self.i % 8] = data - last_value;
+            }
+            self.last_hist_deltas[self.i] = data;
+            self.i += 1;
+            if (self.i % 8) == 0 {
+                nibble_pack8(&self.pack_array, &mut self.out_vec);
+            }
+        }
+    }
+
+    #[inline]
+    fn process8(&mut self, data: u64) {
+        // Shortcut only if data==0: then just pack zeroes
+        if data == 0 {
+            assert!((self.i % 8) == 0);
+            nibble_pack8(&[0; 8], &mut self.out_vec);
+        } else {
+            for _ in 0..8 {
+                self.process(data);
+            }
+        }
+    }
+}
+
 /// Unpacks num_values values from an encoded buffer, by calling nibble_unpack8 enough times.
 /// The output.process() method is called numValues times rounded up to the next multiple of 8.
 /// Returns "remainder" byteslice or unpacking error (say if one ran out of space)
@@ -701,6 +793,50 @@ fn pack_unpack_f64_xor() {
     let res = unpack_f64_xor(&buf[..], &mut sink, inputs.len());
     assert_eq!(res.unwrap().len(), 0);
     assert_eq!(sink.vec[..inputs.len()], inputs);
+}
+
+#[test]
+fn delta_diffpack_sink_test() {
+    let inputs = [ [0u64, 1000, 1001, 1002, 1003, 2005, 2010, 3034, 4045, 5056, 6067, 7078],
+                   [3u64, 1004, 1006, 1008, 1009, 2012, 2020, 3056, 4070, 5090, 6101, 7150],
+                   // [3u64, 1004, 1006, 1008, 1009, 2010, 2020, 3056, 4070, 5090, 6101, 7150],
+                   [7u64, 1010, 1016, 1018, 1019, 2022, 2030, 3078, 4101, 5122, 6134, 7195] ];
+    let diffs = inputs.windows(2).map(|pair| {
+        pair[1].iter().zip(pair[0].iter()).map(|(nb, na)| nb - na ).collect::<Vec<_>>()
+    }).collect::<Vec<_>>();
+
+    // Compress each individual input into its own buffer
+    let compressed_inputs: Vec<Vec<u8>> = inputs.iter().map(|input| {
+        let mut buf = Vec::with_capacity(128);
+        pack_u64_delta(&input[..], &mut buf);
+        buf
+    }).collect();
+
+    let out_buf = Vec::<u8>::new();
+    let mut sink = DeltaDiffPackSink::new(inputs[0].len(), out_buf);
+
+    // Verify delta on first one (empty diffs) yields back the original
+    let res = unpack(&compressed_inputs[0][..], &mut sink, inputs[0].len());
+    assert_eq!(res.unwrap().len(), 0);
+    sink.finish();
+
+    let mut dsink = DeltaSink::new();
+    let res = unpack(&sink.out_vec[..], &mut dsink, inputs[0].len());
+    assert_eq!(dsink.sink.vec[..inputs[0].len()], inputs[0]);
+
+    // Second and subsequent inputs shouyld correspond to diffs
+    for i in 1..3 {
+        sink.out_vec.truncate(0);   // need to reset output
+        let res = unpack(&compressed_inputs[i][..], &mut sink, inputs[0].len());
+        assert_eq!(res.unwrap().len(), 0);
+        assert_eq!(sink.value_dropped, false);  // should not have dropped?
+        sink.finish();
+        // dbg!(&sink.out_vec);
+
+        let mut dsink = DeltaSink::new();
+        let res = unpack(&sink.out_vec[..], &mut dsink, inputs[0].len());
+        assert_eq!(dsink.sink.vec[..inputs[0].len()], diffs[i - 1][..]);
+    }
 }
 
 // NOTE: cfg(test) is needed so that proptest can just be a "dev-dependency" and not linked for final library
