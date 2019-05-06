@@ -2,7 +2,7 @@
 extern crate criterion;
 extern crate compressed_vec;
 
-use criterion::Criterion;
+use criterion::{Criterion, Benchmark, Throughput};
 use compressed_vec::nibblepacking;
 
 fn nibblepack8_varlen(c: &mut Criterion) {
@@ -72,7 +72,6 @@ fn unpack_delta_u64s(c: &mut Criterion) {
         let inputs = increasing_nonzeroes_u64x64(16);
         let mut buf = Vec::with_capacity(1024);
         nibblepacking::pack_u64_delta(&inputs, &mut buf);
-        // println!("Packed inputs of {} bytes to buffer of {} bytes", inputs.len() * 8, buf.len());
 
         let mut sink = nibblepacking::DeltaSink::new();
         b.iter(|| {
@@ -82,8 +81,42 @@ fn unpack_delta_u64s(c: &mut Criterion) {
     });
 }
 
+const BATCH_SIZE: usize = 100;
+
+fn repack_2d_deltas(c: &mut Criterion) {
+    c.bench("repack 2D diff deltas",
+            Benchmark::new("100x u64", |b| {
+
+        let orig = increasing_nonzeroes_u64x64(16);
+        let mut inputs = [0u64; 64];
+        let mut srcbuf = Vec::with_capacity(2048);
+        for i in 0..BATCH_SIZE {
+            for j in 0..orig.len() {
+                inputs[j] = orig[j] + ((j + i) as u64);
+            }
+            nibblepacking::pack_u64_delta(&inputs, &mut srcbuf);
+        }
+
+        let out_buf = Vec::with_capacity(4096);
+        let mut sink = nibblepacking::DeltaDiffPackSink::new(inputs.len(), out_buf);
+
+        b.iter(|| {
+            // Reset out_buf and sink last_deltas state
+            sink.reset();
+            let mut slice = &srcbuf[..];
+
+            for _ in 0..BATCH_SIZE {
+                let res = nibblepacking::unpack(slice, &mut sink, 64);
+                sink.finish();
+                slice = res.unwrap();
+            }
+        })
+    }).throughput(Throughput::Elements(BATCH_SIZE as u32)));
+}
+
 criterion_group!(benches, //nibblepack8_varlen,
                           nibblepack8_varnumbits,
                           pack_delta_u64s_varlen,
-                          unpack_delta_u64s);
+                          unpack_delta_u64s,
+                          repack_2d_deltas);
 criterion_main!(benches);

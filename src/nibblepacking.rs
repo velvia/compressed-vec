@@ -363,7 +363,7 @@ impl Sink for DoubleXorSink {
 /// For more details, see the "2D Delta" section in [compression.md](doc/compression.md)
 #[derive(Default)]
 #[derive(Debug)]
-struct DeltaDiffPackSink {
+pub struct DeltaDiffPackSink {
     value_dropped: bool,
     i: usize,
     last_hist_deltas: Vec<u64>,
@@ -381,12 +381,13 @@ impl DeltaDiffPackSink {
 
     // Resets everythin, even the out_vec.  Probably should be used only for testing
     #[inline]
-    fn reset(&mut self) {
+    pub fn reset(&mut self) {
         self.i = 0;
         self.value_dropped = false;
         for elem in self.last_hist_deltas.iter_mut() {
             *elem = 0;
         }
+        self.out_vec.truncate(0);
     }
 
     /// Call this to finish packing the remainder of the deltas and reset for next go
@@ -430,14 +431,15 @@ impl Sink for DeltaDiffPackSink {
     #[inline]
     fn process8(&mut self, data: u64) {
         // Shortcut only if data==0: then just pack zeroes
-        if data == 0 {
-            assert!((self.i % 8) == 0);
-            nibble_pack8(&[0; 8], &mut self.out_vec);
-        } else {
+        // Disable for now as we are not completely sure if this is legit
+        // if data == 0 {
+        //     assert!((self.i % 8) == 0);
+        //     nibble_pack8(&[0; 8], &mut self.out_vec);
+        // } else {
             for _ in 0..8 {
                 self.process(data);
             }
-        }
+        // }
     }
 }
 
