@@ -2,11 +2,6 @@
 
 use crate::byteutils::*;
 
-#[derive(Debug, PartialEq)]
-pub enum NibblePackError {
-    InputTooShort,
-}
-
 /// Packs a slice of u64 numbers that are increasing, using delta encoding.  That is, the delta between successive
 /// elements is encoded, rather than the absolute numbers.  The first number is encoded as is.
 ///
@@ -482,16 +477,12 @@ pub fn unpack<'a, Output: Sink>(
 pub fn unpack_f64_xor<'a>(encoded: &'a [u8],
                           sink: &mut DoubleXorSink,
                           num_values: usize) -> Result<&'a [u8], NibblePackError> {
-    if (encoded.len() < 8) {
-        Err(NibblePackError::InputTooShort)
-    } else {
-        assert!(num_values >= 1);
-        let mut cursor = std::io::Cursor::new(encoded);
-        let init_value = direct_read_uint_le(&mut cursor, encoded);
-        sink.reset(init_value);
+    assert!(num_values >= 1);
+    let mut cursor = std::io::Cursor::new(encoded);
+    let init_value = direct_read_uint_le(&mut cursor, encoded)?;
+    sink.reset(init_value);
 
-        unpack(&encoded[8..], sink, num_values - 1)
-    }
+    unpack(&encoded[8..], sink, num_values - 1)
 }
 
 /// Unpacks 8 u64's packed using nibble_pack8 by calling the output.process() method 8 times, once for each encoded
@@ -524,7 +515,7 @@ fn nibble_unpack8<'a, Output: Sink>(
         cursor.set_position(2);
 
         // Read in first word
-        let mut in_word = direct_read_uint_le(&mut cursor, inbuf);
+        let mut in_word = direct_read_uint_le(&mut cursor, inbuf)?;
 
         output.reserve(8);
 
@@ -539,15 +530,11 @@ fn nibble_unpack8<'a, Output: Sink>(
                 // If remaining bits are in next word, read next word -- if there's space
                 // We don't want to read the next word though if we're already at the end
                 if remaining <= num_bits && cursor.position() < (total_bytes as u64) {
-                    if ((cursor.position() as usize) < inbuf.len()) {
-                        // Read in MSB bits from next wordå
-                        in_word = direct_read_uint_le(&mut cursor, inbuf);
-                        if remaining < num_bits {
-                            let shifted = in_word << remaining;
-                            out_word |= shifted & mask;
-                        }
-                    } else {
-                        return Err(NibblePackError::InputTooShort);
+                    // Read in MSB bits from next word
+                    in_word = direct_read_uint_le(&mut cursor, inbuf)?;
+                    if remaining < num_bits {
+                        let shifted = in_word << remaining;
+                        out_word |= shifted & mask;
                     }
                 }
 
