@@ -486,7 +486,8 @@ pub fn unpack_f64_xor<'a>(encoded: &'a [u8],
         Err(NibblePackError::InputTooShort)
     } else {
         assert!(num_values >= 1);
-        let init_value = direct_read_uint_le(encoded, 0);
+        let mut cursor = std::io::Cursor::new(encoded);
+        let init_value = direct_read_uint_le(&mut cursor, encoded);
         sink.reset(init_value);
 
         unpack(&encoded[8..], sink, num_values - 1)
@@ -518,12 +519,12 @@ fn nibble_unpack8<'a, Output: Sink>(
         let trailing_zeros = (inbuf[1] & 0x0f) * 4;
         let total_bytes = 2 + (num_bits as u32 * nonzero_mask.count_ones() + 7) / 8;
         let mask: u64 = if num_bits >= 64 { std::u64::MAX } else { (1u64 << num_bits) - 1u64 };
-        let mut buf_index = 2;
         let mut bit_cursor = 0;
+        let mut cursor = std::io::Cursor::new(inbuf);
+        cursor.set_position(2);
 
         // Read in first word
-        let mut in_word = direct_read_uint_le(inbuf, buf_index);
-        buf_index += 8;
+        let mut in_word = direct_read_uint_le(&mut cursor, inbuf);
 
         output.reserve(8);
 
@@ -537,11 +538,10 @@ fn nibble_unpack8<'a, Output: Sink>(
 
                 // If remaining bits are in next word, read next word -- if there's space
                 // We don't want to read the next word though if we're already at the end
-                if remaining <= num_bits && buf_index < total_bytes {
-                    if ((buf_index as usize) < inbuf.len()) {
+                if remaining <= num_bits && cursor.position() < (total_bytes as u64) {
+                    if ((cursor.position() as usize) < inbuf.len()) {
                         // Read in MSB bits from next wordå
-                        in_word = direct_read_uint_le(inbuf, buf_index);
-                        buf_index += 8; // figure out right amount!
+                        in_word = direct_read_uint_le(&mut cursor, inbuf);
                         if remaining < num_bits {
                             let shifted = in_word << remaining;
                             out_word |= shifted & mask;

@@ -1,46 +1,33 @@
 extern crate byteorder;
 
-use self::byteorder::{LittleEndian, ReadBytesExt};
+use self::byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
+use std::io::Cursor;
 
-// TODO: change these to be Vec implementations?  or Writer?
-
-/// Function to write a u64 to memory quickly using unaligned writes.  The Vec state/len is updated & capacity checked.
-/// Equivalent of sun.misc.Unsafe, but it checks Vec has enough space so in theory it should be safe
-/// It is 2-3x faster than the equivalent code from byteorder, which uses memcpy instead.
-/// TODO: write a method which works on multiple 64-bit inputs or partial inputs so the pointer state, reservation etc
-///       can be amortized and the below can be a cheaper write.
+/// Fast write of u64.  numbytes least significant bytes are written.  May overwrite, but it's fine
+/// because this is a Vec which can be extended.  Vec.len() is always advanced numbytes.
 #[inline]
 pub fn direct_write_uint_le(out_buffer: &mut Vec<u8>, value: u64, numbytes: usize) {
-    out_buffer.reserve(8);
-    unsafe {
-        // We have checked the capacity so this is OK
-        unsafe_write_uint_le(out_buffer, value, numbytes);
+    if numbytes == 8 {
+        out_buffer.write_u64::<LittleEndian>(value).unwrap();
+    } else {
+        let orig_len = out_buffer.len();
+        out_buffer.write_u64::<LittleEndian>(value).unwrap();
+        out_buffer.truncate(orig_len + numbytes);
     }
 }
 
+/// Reads u64 value, even if there are less than 8 bytes left.  Reads are little endian.
+/// Cursor state is modified.  Will never read beyond end of inbuf.
 #[inline(always)]
-unsafe fn unsafe_write_uint_le(out_buffer: &mut Vec<u8>, value: u64, numbytes: usize) {
-    let cur_len = out_buffer.len();
-    let ptr = out_buffer.as_mut_ptr().offset(cur_len as isize) as *mut u64;
-    std::ptr::write_unaligned(ptr, value.to_le());
-    out_buffer.set_len(cur_len + numbytes);
-}
-
-/// Safe but fast read from inbuf.  If it can read 64 bits then uses fast unaligned read, otherwise
-/// uses byteorder crate.  Also does Endianness conversion.
-#[inline(always)]
-pub fn direct_read_uint_le(inbuf: &[u8], index: u32) -> u64 {
-    if ((index as usize) + 8) <= inbuf.len() {
-        unsafe {
-            let ptr = inbuf.as_ptr().offset(index as isize) as *const u64;
-            u64::from_le(std::ptr::read_unaligned(ptr))
-        }
+pub fn direct_read_uint_le(cursor: &mut Cursor<&[u8]>, inbuf: &[u8]) -> u64 {
+    let pos = cursor.position() as usize;
+    if (pos + 8) <= inbuf.len() {
+        // TODO: use Result's unwrap_or_else to handle if input is short
+        cursor.read_u64::<LittleEndian>().unwrap()
     } else {
         // Less than 8 bytes left.  Use Byteorder implementation which can read limited # of bytes.
         // This ensures we don't read from a space we are not allowed to.
-        let mut cursor = std::io::Cursor::new(inbuf);
-        cursor.set_position(index as u64);
-        cursor.read_uint::<LittleEndian>(inbuf.len() - index as usize).unwrap()
+        cursor.read_uint::<LittleEndian>(inbuf.len() - pos).unwrap()
     }
 }
 
