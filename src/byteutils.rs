@@ -9,7 +9,6 @@ use self::byteorder::{LittleEndian, ReadBytesExt};
 /// It is 2-3x faster than the equivalent code from byteorder, which uses memcpy instead.
 /// TODO: write a method which works on multiple 64-bit inputs or partial inputs so the pointer state, reservation etc
 ///       can be amortized and the below can be a cheaper write.
-#[inline]
 pub fn direct_write_uint_le(out_buffer: &mut Vec<u8>, value: u64, numbytes: usize) {
     out_buffer.reserve(8);
     unsafe {
@@ -59,7 +58,6 @@ pub unsafe fn unchecked_write_u64_u64_le(out_buffer: &mut Vec<u64>, value: u64) 
 /// Writes eight u64 values in rapid succession to the Vec, directly, using unsafe,
 /// for performance reasons / to avoid checks on every single write.
 /// It is safe because of checks done on the overall write.
-#[inline]
 pub fn write8_u64_le(out_buffer: &mut Vec<u64>, value: u64) {
     out_buffer.reserve(8);
     unsafe {

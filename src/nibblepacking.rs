@@ -100,7 +100,6 @@ pub fn pack_u64<I: Iterator<Item = u64>>(stream: I, out_buffer: &mut Vec<u8>) {
 /// * `inputs` - ref to 8 u64 values to pack, could be the output of a predictor
 /// * `out_buffer` - a vec to write the encoded output to.  Bytes are added at the end - vec is not cleared.
 ///
-#[inline]
 pub fn nibble_pack8(inputs: &[u64; 8], out_buffer: &mut Vec<u8>) {
     // Compute the nonzero bitmask.  TODO: use SIMD here
     let mut nonzero_mask = 0u8;
@@ -145,7 +144,6 @@ pub fn nibble_pack8(inputs: &[u64; 8], out_buffer: &mut Vec<u8>) {
 /// # Arguments
 /// * `trailing_zero_nibbles` - the min # of trailing zero nibbles across all inputs
 /// * `num_nibbles` - the max # of nibbles having nonzero bits in all inputs
-#[inline]
 fn pack_to_even_nibbles(
     inputs: &[u64; 8],
     out_buffer: &mut Vec<u8>,
@@ -168,7 +166,6 @@ fn pack_to_even_nibbles(
 /// This code is inspired by bitpacking crate: https://github.com/tantivy-search/bitpacking/
 /// but modified for the NibblePacking algorithm.  No macros, so slightly less efficient.
 /// TODO: consider using macros like in bitpacking to achieve even more speed :D
-#[inline]
 fn pack_universal(
     inputs: &[u64; 8],
     out_buffer: &mut Vec<u8>,
