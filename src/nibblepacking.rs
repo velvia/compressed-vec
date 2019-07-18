@@ -209,17 +209,8 @@ fn pack_universal(
 ///
 /// A trait for processing data during unpacking.  Used to combine with predictors to create final output.
 pub trait Sink {
-    /// Called to reserve space for safely writing a number of items, perhaps in bulk.
-    /// For example may be used to reserve space in a Vec to ensure individual process() methods can proceed quickly.
-    fn reserve(&mut self, num_items: usize);
-
-    /// The process method processes output, assuming space has been reserved using reserve()
-    #[inline]
-    fn process(&mut self, data: u64);
-
-    /// Processes 8 items all having the same value.  Bulk process method for faster decoding.
-    #[inline]
-    fn process8(&mut self, data: u64);
+    /// Processes 8 items. Sink responsible for space allocation and safety.
+    fn process(&mut self, data: [u64; 8]);
 }
 
 /// A super-simple Sink which just appends to a Vec<u64>
@@ -229,6 +220,7 @@ pub struct LongSink {
 }
 
 const DEFAULT_CAPACITY: usize = 64;
+const ZERO_ELEMS: [u64; 8] = [0u64; 8];
 
 impl LongSink {
     pub fn new() -> LongSink {
@@ -242,18 +234,8 @@ impl LongSink {
 
 impl Sink for LongSink {
     #[inline]
-    fn reserve(&mut self, num_items: usize) {
-        self.vec.reserve(num_items)
-    }
-
-    #[inline]
-    fn process(&mut self, data: u64) {
-        unsafe { unchecked_write_u64_u64_le(&mut self.vec, data) }
-    }
-
-    #[inline]
-    fn process8(&mut self, data: u64) {
-        write8_u64_le(&mut self.vec, data)
+    fn process(&mut self, data: [u64; 8]) {
+        self.vec.extend(&data)
     }
 }
 
@@ -282,20 +264,15 @@ impl DeltaSink {
 
 impl Sink for DeltaSink {
     #[inline]
-    fn reserve(&mut self, num_items: usize) {
-        self.sink.reserve(num_items)
-    }
-
-    #[inline]
-    fn process(&mut self, data: u64) {
-        self.acc += data;
-        self.sink.process(self.acc);
-    }
-
-    #[inline]
-    fn process8(&mut self, data: u64) {
-        self.acc += data;
-        self.sink.process8(self.acc)
+    fn process(&mut self, data: [u64; 8]) {
+        let mut buf = [0u64; 8];
+        let mut acc = self.acc;
+        for i in 0..8 {
+            acc += data[i];
+            buf[i] = acc;
+        }
+        self.acc = acc;
+        self.sink.process(buf);
     }
 }
 
@@ -322,27 +299,18 @@ impl DoubleXorSink {
 
 impl Sink for DoubleXorSink {
     #[inline]
-    fn reserve(&mut self, num_items: usize) {
-        self.vec.reserve(num_items)
-    }
-
-    // TODO: use optimized write methods in byteutils
-    #[inline]
-    fn process(&mut self, data: u64) {
+    fn process(&mut self, data: [u64; 8]) {
+        let mut buf = [0f64; 8];
+        let mut last = self.last;
+        for i in 0..8 {
         // XOR new piece of data with last, which yields original value
-        let numbits = self.last ^ data;
-        self.vec.push(f64::from_bits(numbits));
-        self.last = numbits;
-    }
-
-    #[inline]
-    fn process8(&mut self, data: u64) {
-        // XOR new piece of data with last, which yields original value
-        let numbits = self.last ^ data;
-        self.last = numbits;
-        for _ in 0..8 {
-            self.vec.push(f64::from_bits(numbits));
+            let numbits = last ^ data[i];
+            buf[i] = f64::from_bits(numbits);
+            last = numbits
         }
+        self.last = last;
+
+        self.vec.extend(&buf);
     }
 }
 
@@ -404,39 +372,27 @@ impl DeltaDiffPackSink {
 
 impl Sink for DeltaDiffPackSink {
     #[inline]
-    fn reserve(&mut self, num_items: usize) {}
-
-    #[inline]
-    fn process(&mut self, data: u64) {
-        if self.i < self.last_hist_deltas.len() {
-            let last_value = self.last_hist_deltas[self.i];
+    fn process(&mut self, data: [u64; 8]) {
+        let maxlen = self.last_hist_deltas.len();
+        let looplen = if self.i + 8 <= maxlen { 8 } else { maxlen - self.i };
+        for n in 0..looplen {
+            let last_value = self.last_hist_deltas[self.i + n];
             // If data dropped from last, write data instead of diff
-            if data < last_value {
+            if data[n] < last_value {
                 self.value_dropped = true;
-                self.pack_array[self.i % 8] = data;
+                self.pack_array[n] = data[n];
             } else {
-                self.pack_array[self.i % 8] = data - last_value;
-            }
-            self.last_hist_deltas[self.i] = data;
-            self.i += 1;
-            if (self.i % 8) == 0 {
-                nibble_pack8(&self.pack_array, &mut self.out_vec);
+                self.pack_array[n] = data[n] - last_value;
             }
         }
-    }
-
-    #[inline]
-    fn process8(&mut self, data: u64) {
-        // Shortcut only if data==0: then just pack zeroes
-        // Disable for now as we are not completely sure if this is legit
-        // if data == 0 {
-        //     assert!((self.i % 8) == 0);
-        //     nibble_pack8(&[0; 8], &mut self.out_vec);
-        // } else {
-            for _ in 0..8 {
-                self.process(data);
-            }
-        // }
+        // copy data wholesale to last_hist_deltas
+        (&mut self.last_hist_deltas[self.i..(self.i+looplen)]).copy_from_slice(&data[0..looplen]);
+        // if numElems < 8, zero out remainder of packArray
+        for n in looplen..8 {
+            self.pack_array[n] = 0;
+        }
+        nibble_pack8(&self.pack_array, &mut self.out_vec);
+        self.i += 8;
     }
 }
 
@@ -508,7 +464,7 @@ fn nibble_unpack8<'a, Output: Sink>(
     let nonzero_mask = inbuf[0];
     if nonzero_mask == 0 {
         // All 8 words are 0; skip further processing
-        output.process8(0);
+        output.process(ZERO_ELEMS);
         Ok(&inbuf[1..])
     } else {
         let num_bits = ((inbuf[1] >> 4) + 1) * 4;
@@ -517,12 +473,11 @@ fn nibble_unpack8<'a, Output: Sink>(
         let mask: u64 = if num_bits >= 64 { std::u64::MAX } else { (1u64 << num_bits) - 1u64 };
         let mut buf_index = 2;
         let mut bit_cursor = 0;
+        let mut out_array = [0u64; 8];
 
         // Read in first word
         let mut in_word = direct_read_uint_le(inbuf, buf_index);
         buf_index += 8;
-
-        output.reserve(8);
 
         for bit in 0..8 {
             if (nonzero_mask & (1 << bit)) != 0 {
@@ -548,14 +503,13 @@ fn nibble_unpack8<'a, Output: Sink>(
                     }
                 }
 
-                output.process(out_word << trailing_zeros);
+                out_array[bit] = out_word << trailing_zeros;
 
                 // Update other indices
                 bit_cursor = (bit_cursor + num_bits) % 64;
-            } else {
-                output.process(0);
             }
         }
+        output.process(out_array);
 
         // Return the "remaining slice" - the rest of input buffer after we've parsed our bytes.
         // This allows for easy and clean chaining of nibble_unpack8 calls with no mutable state
