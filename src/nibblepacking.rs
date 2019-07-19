@@ -210,7 +210,7 @@ fn pack_universal(
 /// A trait for processing data during unpacking.  Used to combine with predictors to create final output.
 pub trait Sink {
     /// Processes 8 items. Sink responsible for space allocation and safety.
-    fn process(&mut self, data: [u64; 8]);
+    fn process(&mut self, data: &[u64; 8]);
 }
 
 /// A super-simple Sink which just appends to a Vec<u64>
@@ -234,8 +234,8 @@ impl LongSink {
 
 impl Sink for LongSink {
     #[inline]
-    fn process(&mut self, data: [u64; 8]) {
-        self.vec.extend(&data)
+    fn process(&mut self, data: &[u64; 8]) {
+        self.vec.extend(data)
     }
 }
 
@@ -264,7 +264,7 @@ impl DeltaSink {
 
 impl Sink for DeltaSink {
     #[inline]
-    fn process(&mut self, data: [u64; 8]) {
+    fn process(&mut self, data: &[u64; 8]) {
         let mut buf = [0u64; 8];
         let mut acc = self.acc;
         for i in 0..8 {
@@ -272,7 +272,7 @@ impl Sink for DeltaSink {
             buf[i] = acc;
         }
         self.acc = acc;
-        self.sink.process(buf);
+        self.sink.process(&buf);
     }
 }
 
@@ -299,7 +299,7 @@ impl DoubleXorSink {
 
 impl Sink for DoubleXorSink {
     #[inline]
-    fn process(&mut self, data: [u64; 8]) {
+    fn process(&mut self, data: &[u64; 8]) {
         let mut buf = [0f64; 8];
         let mut last = self.last;
         for i in 0..8 {
@@ -372,7 +372,7 @@ impl DeltaDiffPackSink {
 
 impl Sink for DeltaDiffPackSink {
     #[inline]
-    fn process(&mut self, data: [u64; 8]) {
+    fn process(&mut self, data: &[u64; 8]) {
         let maxlen = self.last_hist_deltas.len();
         let looplen = if self.i + 8 <= maxlen { 8 } else { maxlen - self.i };
         for n in 0..looplen {
@@ -464,7 +464,7 @@ fn nibble_unpack8<'a, Output: Sink>(
     let nonzero_mask = inbuf[0];
     if nonzero_mask == 0 {
         // All 8 words are 0; skip further processing
-        output.process(ZERO_ELEMS);
+        output.process(&ZERO_ELEMS);
         Ok(&inbuf[1..])
     } else {
         let num_bits = ((inbuf[1] >> 4) + 1) * 4;
@@ -509,7 +509,7 @@ fn nibble_unpack8<'a, Output: Sink>(
                 bit_cursor = (bit_cursor + num_bits) % 64;
             }
         }
-        output.process(out_array);
+        output.process(&out_array);
 
         // Return the "remaining slice" - the rest of input buffer after we've parsed our bytes.
         // This allows for easy and clean chaining of nibble_unpack8 calls with no mutable state
