@@ -50,18 +50,3 @@ pub unsafe fn unchecked_write_u64_u64_le(out_buffer: &mut Vec<u64>, value: u64) 
     std::ptr::write(ptr, value.to_le());
     out_buffer.set_len(cur_len + 1);
 }
-
-/// Writes eight u64 values in rapid succession to the Vec, directly, using unsafe,
-/// for performance reasons / to avoid checks on every single write.
-/// It is safe because of checks done on the overall write.
-pub fn write8_u64_le(out_buffer: &mut Vec<u64>, value: u64) {
-    out_buffer.reserve(8);
-    unsafe {
-        let cur_len = out_buffer.len();
-        let ptr = out_buffer.as_mut_ptr().offset(cur_len as isize);
-        for i in 0..8 {
-            std::ptr::write(ptr.add(i), value.to_le());
-        }
-        out_buffer.set_len(cur_len + 8);
-    }
-}
