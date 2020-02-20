@@ -5,8 +5,9 @@ authors = ["Evan Chan <velvia@gmail.com>"]
 edition = "2018"
 
 [dependencies]
-memoffset = "0.2"
+memoffset = "0.5"
 byteorder = "1"
+plain = "0.2.3"
 
 [dev-dependencies]
 criterion = "^0.2"
