@@ -8,6 +8,7 @@ edition = "2018"
 memoffset = "0.5"
 byteorder = "1"
 plain = "0.2.3"
+scroll = { version = "0.10", features = ["derive"] }
 
 [dev-dependencies]
 criterion = "^0.2"

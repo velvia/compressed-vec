@@ -3,6 +3,11 @@ use std::mem;
 /// BinaryVector: a compressed vector storing data of the same type
 ///   enabling high speed operations on compressed data without
 ///   the need for decompressing (in many cases, exceptions noted)
+///
+/// A BinaryVector MAY consist of multiple sections.  Each section can represent
+/// potentially different encoding parameters (bit widths, sparsity, etc.) and
+/// has its own header to allow for quickly skipping ahead even when different
+/// sections are encoded differently.
 #[repr(C)]
 pub struct BinaryVector {
     num_bytes: u32,         // Number of bytes in vector following this length
