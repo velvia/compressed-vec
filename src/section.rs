@@ -96,6 +96,9 @@ type CodingResult = Result<(u16, u16), CodingError>;
 ///
 /// Example which adds 8 0xff elements and returns an error if there isn't enough space:
 /// ```
+/// # use compressed_vec::section::*;
+/// let mut buf = [0u8; 1024];
+/// let mut writer = SectionWriter::new(&mut buf, 256);
 /// let res = writer.add_64kb(SectionType::Null, |writebuf: &mut [u8], _| {
 ///     if writebuf.len() < 8 { Err(CodingError::NotEnoughSpace) }
 ///     else {

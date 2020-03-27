@@ -13,13 +13,12 @@ fn nibblepack8_varlen(c: &mut Criterion) {
     //  2) For some odd reason, running just a single benchmark speeds it up significantly, running two slows down each one by half
     c.bench_function_over_inputs("nibblepack8 varying nonzeroes", |b, &&nonzeroes| {
         let mut inputbuf = [0u64; 8];
-        let mut buf = Vec::with_capacity(1024);
+        let mut buf = [0u8; 1024];
         for i in 0..nonzeroes {
             inputbuf[i] = 0x1234u64 + i as u64;
         }
         b.iter(|| {
-            buf.clear();
-            nibblepacking::nibble_pack8(&inputbuf, &mut buf)
+            nibblepacking::nibble_pack8(&inputbuf, &mut buf, 0).unwrap();
         })
     }, &[0, 2, 4, 6, 8]);
 }
@@ -28,13 +27,12 @@ fn nibblepack8_varlen(c: &mut Criterion) {
 fn nibblepack8_varnumbits(c: &mut Criterion) {
     c.bench_function_over_inputs("nibblepack8 varying # bits", |b, &&numbits| {
         let mut inputbuf = [0u64; 8];
-        let mut buf = Vec::with_capacity(1024);
+        let mut buf = [0u8; 1024];
         for i in 0..4 {
             inputbuf[i] = (1u64 << numbits) - 1 - (i as u64);
         }
         b.iter(|| {
-            buf.clear();
-            nibblepacking::nibble_pack8(&inputbuf, &mut buf)
+            nibblepacking::nibble_pack8(&inputbuf, &mut buf, 0).unwrap();
         })
     }, &[8, 12, 16, 20, 24, 32]);
 }
@@ -59,10 +57,9 @@ fn increasing_nonzeroes_u64x64(num_nonzeroes: usize) -> [u64; 64] {
 fn pack_delta_u64s_varlen(c: &mut Criterion) {
     c.bench_function_over_inputs("pack delta u64s varying nonzero numbers", |b, &&nonzeroes| {
         let inputs = increasing_nonzeroes_u64x64(nonzeroes);
-        let mut buf = Vec::with_capacity(1024);
+        let mut buf = [0u8; 1024];
         b.iter(|| {
-            buf.clear();
-            nibblepacking::pack_u64_delta(&inputs, &mut buf)
+            nibblepacking::pack_u64_delta(&inputs, &mut buf).unwrap();
         })
     }, &[2, 4, 8, 16]);
 }
@@ -70,8 +67,8 @@ fn pack_delta_u64s_varlen(c: &mut Criterion) {
 fn unpack_delta_u64s(c: &mut Criterion) {
     c.bench_function("unpack delta u64s", |b| {
         let inputs = increasing_nonzeroes_u64x64(16);
-        let mut buf = Vec::with_capacity(1024);
-        nibblepacking::pack_u64_delta(&inputs, &mut buf);
+        let mut buf = [0u8; 1024];
+        nibblepacking::pack_u64_delta(&inputs, &mut buf).unwrap();
 
         let mut sink = nibblepacking::DeltaSink::new();
         b.iter(|| {
@@ -89,12 +86,12 @@ fn repack_2d_deltas(c: &mut Criterion) {
 
         let orig = increasing_nonzeroes_u64x64(16);
         let mut inputs = [0u64; 64];
-        let mut srcbuf = Vec::with_capacity(2048);
+        let mut srcbuf = [0u8; 1024];
         for i in 0..BATCH_SIZE {
             for j in 0..orig.len() {
                 inputs[j] = orig[j] + ((j + i) as u64);
             }
-            nibblepacking::pack_u64_delta(&inputs, &mut srcbuf);
+            nibblepacking::pack_u64_delta(&inputs, &mut srcbuf).unwrap();
         }
 
         let out_buf = Vec::with_capacity(4096);

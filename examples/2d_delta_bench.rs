@@ -1,7 +1,7 @@
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::time::Instant;
-use compressed_vec::nibblepacking;
+use compressed_vec::{histogram, nibblepacking};
 
 ///
 /// 2d_delta_bench <<CSV histogram file>>
@@ -18,8 +18,9 @@ fn main() {
 
     let filename = std::env::args().nth(1).expect("No filename given");
     let file = File::open(filename).unwrap();
-    let mut srcbuf = Vec::<u8>::with_capacity(65536);
+    let mut srcbuf = [0u8; 65536];
     let mut num_lines = 0;
+    let mut offset = 0;
 
     for line in BufReader::new(&file).lines() {
         // Split and trim lines, parsing into u64.  Delta encode
@@ -32,15 +33,15 @@ fn main() {
                                last = n;
                                delta
                            });
-        nibblepacking::pack_u64(num_iter, &mut srcbuf);
+        offset = nibblepacking::pack_u64(num_iter, &mut srcbuf, offset).unwrap();
         num_lines += 1;
     }
 
     println!("Finished reading and compressing {} histograms, now running {} iterations of 2D Delta...",
              num_lines, NUM_LOOPS);
 
-    let out_buf = Vec::with_capacity(4096);
-    let mut sink = nibblepacking::DeltaDiffPackSink::new(NUM_BUCKETS, out_buf);
+    let mut out_buf = [0u8; 4096];
+    let mut sink = histogram::DeltaDiffPackSink::new(NUM_BUCKETS, &mut out_buf);
     let start = Instant::now();
 
     for _ in 0..NUM_LOOPS {

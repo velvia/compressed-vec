@@ -1,23 +1,38 @@
-use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
+use byteorder::{LittleEndian, ReadBytesExt};
+use scroll::{Pwrite, LE};
 use std::io::Cursor;
 
 #[derive(Debug, PartialEq)]
 pub enum NibblePackError {
     InputTooShort,
+    BufferTooShort(usize),
 }
 
 
-/// Fast write of u64.  numbytes least significant bytes are written.  May overwrite, but it's fine
-/// because this is a Vec which can be extended.  Vec.len() is always advanced numbytes.
+/// Fast write of u64.  numbytes least significant bytes are written.
+/// Writes into out_buffer[offset..offset+numbytes].
+/// Returns offset+numbytes
 #[inline]
-pub fn direct_write_uint_le(out_buffer: &mut Vec<u8>, value: u64, numbytes: usize) {
-    if numbytes == 8 {
-        out_buffer.write_u64::<LittleEndian>(value).unwrap();
-    } else {
-        let orig_len = out_buffer.len();
-        out_buffer.write_u64::<LittleEndian>(value).unwrap();
-        out_buffer.truncate(orig_len + numbytes);
-    }
+pub fn direct_write_uint_le(out_buffer: &mut [u8],
+                            offset: usize,
+                            value: u64,
+                            numbytes: usize) -> Result<usize, NibblePackError> {
+    // By default, write all 8 bytes checking that there's enough space.
+    // We only adjust offset by numbytes, so the happy path is pretty fast.
+    let _num_written = out_buffer.pwrite_with(value, offset, LE)
+        .or_else(|err| match err {
+            _ => {
+                if out_buffer.len() < offset + numbytes {
+                    Err(NibblePackError::BufferTooShort(offset + numbytes - out_buffer.len()))
+                } else {
+                    // Copy only numbytes bytes to be memory safe
+                    let bytes = value.to_le_bytes();
+                    out_buffer[offset..offset+numbytes].copy_from_slice(&bytes[0..numbytes]);
+                    Ok(numbytes)
+                }
+            },
+        })?;
+    Ok(offset + numbytes)
 }
 
 /// Reads u64 value, even if there are less than 8 bytes left.  Reads are little endian.
@@ -37,16 +52,4 @@ pub fn direct_read_uint_le(cursor: &mut Cursor<&[u8]>, inbuf: &[u8]) -> Result<u
                 Err(NibblePackError::InputTooShort)
             }
         })
-}
-
-/// Writes a u64 directly to a vec<u64>, without checking for or reserving more space.
-///
-/// This method is unsafe as it does not check that the buf has enough space.
-/// It is expected for the user to check this themselves via reserve() earlier on.
-#[inline]
-pub unsafe fn unchecked_write_u64_u64_le(out_buffer: &mut Vec<u64>, value: u64) {
-    let cur_len = out_buffer.len();
-    let ptr = out_buffer.as_mut_ptr().offset(cur_len as isize);
-    std::ptr::write(ptr, value.to_le());
-    out_buffer.set_len(cur_len + 1);
 }
