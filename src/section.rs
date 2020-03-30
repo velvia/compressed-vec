@@ -8,9 +8,15 @@
 ///
 /// The code uses Scroll to ensure efficient encoding but one that works across platforms and endianness.
 
+use crate::error::CodingError;
+use crate::nibblepacking;
+
 use std::convert::TryFrom;
 
+use arrayref::array_ref;
+use enum_dispatch::enum_dispatch;
 use scroll::{ctx, Endian, Pread, Pwrite, LE};
+
 
 /// For FixedSections this represents the first (and maybe only) byte of the section.
 /// For SectionHeader based sections this is the byte at offset 4 into the header.
@@ -70,23 +76,6 @@ pub struct SectionHeader {
     typ: SectionType,
 }
 
-// TODO: move stupid thing to more general place
-#[derive(Debug, PartialEq)]
-pub enum CodingError {
-    NotEnoughSpace,     //
-    InvalidSectionType(u8),
-    ScrollErr(String),
-}
-
-impl From<scroll::Error> for CodingError {
-    fn from(err: scroll::Error) -> CodingError {
-        match err {
-            scroll::Error::TooBig { .. } => CodingError::NotEnoughSpace,
-            _ => CodingError::ScrollErr(err.to_string()),
-        }
-    }
-}
-
 /// Result: (bytes_written, elements_written)
 type CodingResult = Result<(u16, u16), CodingError>;
 
@@ -97,6 +86,7 @@ type CodingResult = Result<(u16, u16), CodingError>;
 /// Example which adds 8 0xff elements and returns an error if there isn't enough space:
 /// ```
 /// # use compressed_vec::section::*;
+/// # use compressed_vec::error::CodingError;
 /// let mut buf = [0u8; 1024];
 /// let mut writer = SectionWriter::new(&mut buf, 256);
 /// let res = writer.add_64kb(SectionType::Null, |writebuf: &mut [u8], _| {
@@ -188,6 +178,145 @@ impl<'a> SectionWriter<'a> {
     }
 }
 
+const FIXED_LEN: usize = 256;
+
+/// A FixedSection is a section with a fixed number of elements.
+/// Thus a compressed vector could be made of a number of FixedSections.
+/// Currently the implementation is tied to 256 elements.
+///
+/// Each section begins with a 1-byte SectionType enum, after which each one defines its own format.
+///
+/// NOTE: To avoid needing to box trait implementations for things like `FixedSectIterator`, we
+/// use [enum_dispatch](https://docs.rs/enum_dispatch/0.2.2/enum_dispatch/); methods can be called on
+/// `FixedSectEnum` and `try_into()` used to convert back to original values.
+///
+#[enum_dispatch]
+pub trait FixedSection {
+    /// The number of bytes total in this section including the section type header byte
+    fn num_bytes(&self) -> usize;
+    fn num_elements(&self) -> usize { FIXED_LEN }
+}
+
+#[enum_dispatch(FixedSection)]
+#[derive(Debug, PartialEq)]
+pub enum FixedSectEnum {
+    NullFixedSect,
+    NibblePackU64MedFixedSect,
+}
+
+impl TryFrom<&[u8]> for FixedSectEnum {
+    type Error = CodingError;
+    /// Tries to extract a FixedSection from a slice, whose first byte contains the section type byte.
+    /// The length of the slice should contain at least all the data in the section.
+    fn try_from(s: &[u8]) -> Result<FixedSectEnum, CodingError> {
+        if s.len() <= 0 { return Err(CodingError::InputTooShort) }
+        let sect_type = SectionType::try_from(s[0])?;
+        match sect_type {
+            SectionType::Null => Ok((NullFixedSect {}).into()),
+            SectionType::NibblePackedU64Medium =>
+                NibblePackU64MedFixedSect::try_from(s).map(|sect| sect.into())
+        }
+    }
+}
+
+/// A NullFixedSect are 256 "Null" or 0 elements.
+/// For dictionary encoding they represent missing or Null values.
+/// Its binary representation consists solely of a SectionType::Null byte.
+#[derive(Debug, PartialEq)]
+pub struct NullFixedSect {}
+
+impl NullFixedSect {
+    /// Writes out marker for null section, just one byte.  Returns offset+1 unless
+    /// there isn't room or offset is invalid.
+    pub fn write(out_buf: &mut [u8], offset: usize) -> Result<usize, CodingError> {
+        out_buf.pwrite_with(SectionType::Null as u8, offset, LE)?;
+        Ok(offset + 1)
+    }
+}
+
+impl FixedSection for NullFixedSect {
+    fn num_bytes(&self) -> usize { 1 }
+}
+
+/// A FixedSection which is: NP=NibblePack'ed, u64 elements, Medium sized (<64KB)
+/// Binary layout (all offsets are from start of section/type byte)
+///  +0   SectionType::NibblePackedU64Medium
+///  +1   2-byte LE size of NibblePack-encoded bytes to follow
+///  +3   NibblePack-encoded 256 u64 elements
+#[derive(Debug, PartialEq, Copy, Clone)]
+pub struct NibblePackU64MedFixedSect {
+    encoded_bytes: u16,
+}
+
+impl NibblePackU64MedFixedSect {
+    /// Tries to create a new NibblePackU64MedFixedSect from a byte slice starting from the first
+    /// section type byte of the section.  Byte slice should be as large as the length bytes indicate.
+    pub fn try_from(sect_bytes: &[u8]) -> Result<NibblePackU64MedFixedSect, CodingError> {
+        let encoded_bytes = sect_bytes.pread_with(1, LE)
+                                .and_then(|n| {
+                                    if (n + 3) >= sect_bytes.len() as u16 { Ok(n) }
+                                    else { Err(scroll::Error::Custom("Slice not large enough".to_string())) }
+                                })?;
+        Ok(NibblePackU64MedFixedSect { encoded_bytes })
+    }
+
+    pub fn iter<'a>(&mut self, sect_bytes: &'a [u8]) -> nibblepacking::IterU64Sink<'a> {
+        nibblepacking::IterU64Sink::new(&sect_bytes[3..], FIXED_LEN)
+    }
+
+    /// Writes out a fixed NibblePacked medium section, including correct length bytes,
+    /// performing NibblePacking in the meantime.  Note: length value will be written last.
+    /// Only after the write succeeds should vector metadata such as length/num bytes be updated.
+    /// Returns the final offset after last bytes written.
+    pub fn write(out_buf: &mut [u8], offset: usize, values: &[u64]) -> Result<usize, CodingError> {
+        assert_eq!(values.len(), FIXED_LEN);
+        out_buf.pwrite_with(SectionType::NibblePackedU64Medium as u8, offset, LE)?;
+        let mut off = offset + 3;
+        for i in 0..32 {
+            let chunk8 = array_ref![values, i*8, 8];
+            off = nibblepacking::nibble_pack8(chunk8, out_buf, off)?;
+        }
+        let num_bytes = off - offset - 3;
+        if num_bytes <= 65535 {
+            out_buf.pwrite_with(num_bytes as u16, offset + 1, LE)?;
+            Ok(off)
+        } else {
+            Err(CodingError::NotEnoughSpace)
+        }
+    }
+}
+
+impl FixedSection for NibblePackU64MedFixedSect {
+    fn num_bytes(&self) -> usize { self.encoded_bytes as usize + 3 }
+}
+
+/// Iterates over a series of encoded FixedSections, basically the data of any Vector encoded as Fixed256
+pub struct FixedSectIterator<'a> {
+    encoded_bytes: &'a [u8]
+}
+
+impl<'a> FixedSectIterator<'a> {
+    pub fn new(encoded_bytes: &'a [u8]) -> Self {
+        FixedSectIterator { encoded_bytes }
+    }
+}
+
+/// FixedSectIterator iterates over (FixedSectEnum, section byte slice) - the section byte slice contains
+/// all the bytes from the section including the starting type byte.
+impl<'a> Iterator for FixedSectIterator<'a> {
+    type Item = (FixedSectEnum, &'a [u8]);
+    fn next(&mut self) -> Option<Self::Item> {
+        match FixedSectEnum::try_from(self.encoded_bytes) {
+            Ok(fse) => {
+                let orig_slice = self.encoded_bytes;
+                self.encoded_bytes = &self.encoded_bytes[fse.num_bytes()..];
+                Some((fse, orig_slice))
+            },
+            Err(_) => None
+        }
+    }
+}
+
 
 #[test]
 fn test_sectwriter_cannot_add_sect_header() {
@@ -220,5 +349,54 @@ fn test_sectwriter_fill_section_normal() {
 
     assert_eq!(res, Ok((8, 8)));
     assert_eq!(writer.cur_pos(), 13);
+}
+
+#[test]
+fn test_npu64med_write_error_no_room() {
+    // Allocate a buffer that's not large enough - first, no room for header
+    let mut buf = [0u8; 2];  // header needs 3 bytes at least
+    let data: Vec<u64> = (0..256).collect();
+
+    let res = NibblePackU64MedFixedSect::write(&mut buf, 0, &data[..]);
+    assert_eq!(res, Err(CodingError::NotEnoughSpace));
+
+    // No room for all values
+    let mut buf = [0u8; 100];  // Need ~312 bytes to NibblePack compress the inputs above
+
+    let res = NibblePackU64MedFixedSect::write(&mut buf, 0, &data[..]);
+    assert_eq!(res, Err(CodingError::NotEnoughSpace));
+}
+
+#[test]
+fn test_fixedsectiterator_write_and_read() {
+    let mut buf = [0u8; 1024];
+    let data: Vec<u64> = (0..256).collect();
+    let mut off = 0;
+
+    off = NullFixedSect::write(&mut buf, off).unwrap();
+    assert_eq!(off, 1);
+
+    off = NibblePackU64MedFixedSect::write(&mut buf, off, &data[..]).unwrap();
+
+    // Now, create an iterator and collect enums.  Send only the slice of written data, no more.
+    let sect_iter = FixedSectIterator::new(&buf[0..off]);
+    let sections = sect_iter.collect::<Vec<(FixedSectEnum, &[u8])>>();
+
+    assert_eq!(sections.len(), 2);
+    let (sect, _sect_bytes) = &sections[0];
+    assert_eq!(sect.num_bytes(), 1);
+    match sect {
+        FixedSectEnum::NullFixedSect(..) => {},
+        _ => panic!("Got the wrong sect: {:?}", sect),
+    }
+
+    let (sect, sect_bytes) = &sections[1];
+    assert!(sect.num_bytes() <= sect_bytes.len());
+    if let FixedSectEnum::NibblePackU64MedFixedSect(mut inner_sect) = sect {
+        let unpacked_data: Vec<u64> = inner_sect.iter(sect_bytes).collect();
+        assert_eq!(unpacked_data, data);
+    } else {
+        panic!("Wrong type obtained at sections[1]")
+    }
 }
 

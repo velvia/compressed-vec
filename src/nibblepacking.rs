@@ -1,5 +1,6 @@
 #![allow(unused)] // needed for dbg!() macro, but folks say this should not be needed
 
+use crate::error::CodingError;
 use crate::byteutils::*;
 
 /// Packs a slice of u64 numbers that are increasing, using delta encoding.  That is, the delta between successive
@@ -9,7 +10,7 @@ use crate::byteutils::*;
 /// This is currently only designed for the case where successive numbers are either the same or increasing
 /// (such as Prometheus-style increasing histograms).  If a successive input is less than the previous input,
 /// currently this method WILL CLIP and record the difference as 0.
-pub fn pack_u64_delta(inputs: &[u64], out_buffer: &mut [u8]) -> Result<usize, NibblePackError> {
+pub fn pack_u64_delta(inputs: &[u64], out_buffer: &mut [u8]) -> Result<usize, CodingError> {
     let mut last = 0u64;
     let deltas = inputs.into_iter().map(|&n| {
         let delta = n.saturating_sub(last);
@@ -24,14 +25,14 @@ pub fn pack_u64_delta(inputs: &[u64], out_buffer: &mut [u8]) -> Result<usize, Ni
 /// value is written, based on the premise that when changes are small so is the XORed value.
 /// Stream must have at least one value, otherwise InputTooShort is returned
 pub fn pack_f64_xor<I: Iterator<Item = f64>>(mut stream: I,
-                                             out_buffer: &mut [u8]) -> Result<usize, NibblePackError> {
+                                             out_buffer: &mut [u8]) -> Result<usize, CodingError> {
     let mut last: u64 = match stream.next() {
         Some(num) => {
             let num_bits = num.to_bits();
             direct_write_uint_le(out_buffer, 0, num_bits, 8);
             num_bits
         },
-        None      => return Err(NibblePackError::InputTooShort)
+        None      => return Err(CodingError::InputTooShort)
     };
     pack_u64(stream.map(|f| {
         let f_bits = f.to_bits();
@@ -64,7 +65,7 @@ pub fn pack_f64_xor<I: Iterator<Item = f64>>(mut stream: I,
 #[inline]
 pub fn pack_u64<I: Iterator<Item = u64>>(stream: I,
                                          out_buffer: &mut [u8],
-                                         offset: usize) -> Result<usize, NibblePackError> {
+                                         offset: usize) -> Result<usize, CodingError> {
     let mut in_buffer = [0u64; 8];
     let mut bufindex = 0;
     let mut off = offset;
@@ -104,7 +105,7 @@ pub fn pack_u64<I: Iterator<Item = u64>>(stream: I,
 #[inline(always)]
 pub fn nibble_pack8(inputs: &[u64; 8],
                     out_buffer: &mut [u8],
-                    offset: usize) -> Result<usize, NibblePackError> {
+                    offset: usize) -> Result<usize, CodingError> {
     // Compute the nonzero bitmask.  TODO: use SIMD here
     let mut nonzero_mask = 0u8;
     let mut off = offset;
@@ -114,7 +115,7 @@ pub fn nibble_pack8(inputs: &[u64; 8],
         }
     }
     if off >= out_buffer.len() {
-        return Err(NibblePackError::BufferTooShort(off - out_buffer.len()));
+        return Err(CodingError::NotEnoughSpace);
     }
     out_buffer[off] = nonzero_mask;
     off += 1;
@@ -162,7 +163,7 @@ fn pack_to_even_nibbles(
     offset: usize,
     num_nibbles: u32,
     trailing_zero_nibbles: u32
-) -> Result<usize, NibblePackError> {
+) -> Result<usize, CodingError> {
     // In the future, explore these optimizations: functions just for specific nibble widths
     let shift = trailing_zero_nibbles * 4;
     assert!(num_nibbles % 2 == 0);
@@ -189,7 +190,7 @@ fn pack_universal(
     offset: usize,
     num_nibbles: u32,
     trailing_zero_nibbles: u32
-) -> Result<usize, NibblePackError> {
+) -> Result<usize, CodingError> {
     let trailing_shift = trailing_zero_nibbles * 4;
     let num_bits = num_nibbles * 4;
     let mut out_word = 0u64;
@@ -237,7 +238,7 @@ pub trait Sink {
 /// A super-simple Sink which just appends to a Vec<u64>
 #[derive(Debug)]
 pub struct LongSink {
-    vec: Vec<u64>,
+    pub vec: Vec<u64>,
 }
 
 const DEFAULT_CAPACITY: usize = 64;
@@ -257,6 +258,60 @@ impl Sink for LongSink {
     #[inline]
     fn process(&mut self, data: &[u64; 8]) {
         self.vec.extend(data)
+    }
+}
+
+/// A Sink which is used to iterate over individual u64 unpacked values.
+/// Call `IterU64Sink::new()` with the NibblePacked buffer and number of values to unpack,
+/// and this sink will call unpack and also provide the Iterator API.
+/// NOTE: This is designed for convenience and not speed.  It makes sure only num_values
+/// are iterated over.
+#[derive(Debug)]
+pub struct IterU64Sink<'a> {
+    values: [u64; 8],
+    i: usize,
+    encoded_buf: &'a [u8],
+    left: usize,
+}
+
+impl<'a> IterU64Sink<'a> {
+    pub fn new(encoded_buf: &'a [u8], num_values: usize) -> Self {
+        // NOTE: initialize i to 8 so that it will start by calling unpack
+        Self { values: [0u64; 8], i: 8, encoded_buf, left: num_values }
+    }
+}
+
+impl<'a> Sink for IterU64Sink<'a> {
+    #[inline]
+    fn process(&mut self, data: &[u64; 8]) {
+        self.values = *data;
+    }
+}
+
+impl<'a> Iterator for IterU64Sink<'a> {
+    type Item = u64;
+    fn next(&mut self) -> Option<u64> {
+        if self.i < 8 && self.left > 0 {
+            let next_value = self.values[self.i];
+            self.i += 1;
+            self.left -= 1;
+            Some(next_value)
+        } else {
+            // Do we have more values to unpack?  Let's do it!
+            // NOTE: if there is an unpacking error, then we just return None
+            if self.left > 0 {
+                match nibble_unpack8(self.encoded_buf, self) {
+                    Ok(remaining) => {
+                        self.encoded_buf = remaining;
+                        self.i = 0;
+                        self.next()
+                    },
+                    Err(_) => None
+                }
+            } else {
+                None
+            }
+        }
     }
 }
 
@@ -352,7 +407,7 @@ pub fn unpack<'a, Output: Sink>(
     encoded: &'a [u8],
     output: &mut Output,
     num_values: usize,
-) -> Result<&'a [u8], NibblePackError> {
+) -> Result<&'a [u8], CodingError> {
     let mut values_left = num_values as isize;
     let mut inbuf = encoded;
     while values_left > 0 {
@@ -377,7 +432,7 @@ pub fn unpack<'a, Output: Sink>(
 /// ```
 pub fn unpack_f64_xor<'a>(encoded: &'a [u8],
                           sink: &mut DoubleXorSink,
-                          num_values: usize) -> Result<&'a [u8], NibblePackError> {
+                          num_values: usize) -> Result<&'a [u8], CodingError> {
     assert!(num_values >= 1);
     let mut cursor = std::io::Cursor::new(encoded);
     let init_value = direct_read_uint_le(&mut cursor, encoded)?;
@@ -400,7 +455,8 @@ pub fn unpack_f64_xor<'a>(encoded: &'a [u8],
 fn nibble_unpack8<'a, Output: Sink>(
     inbuf: &'a [u8],
     output: &mut Output,
-) -> Result<&'a [u8], NibblePackError> {
+) -> Result<&'a [u8], CodingError> {
+    if inbuf.is_empty() { return Err(CodingError::NotEnoughSpace) }
     let nonzero_mask = inbuf[0];
     if nonzero_mask == 0 {
         // All 8 words are 0; skip further processing
@@ -602,7 +658,7 @@ fn unpack8_input_too_short() {
     ]; // too short!!
     let mut sink = LongSink::new();
     let res = nibble_unpack8(&compressed, &mut sink);
-    assert_eq!(res, Err(NibblePackError::InputTooShort));
+    assert_eq!(res, Err(CodingError::NotEnoughSpace));
 }
 
 // Tests the case where nibbles lines up with 64-bit boundaries - edge case
@@ -655,6 +711,17 @@ fn pack_unpack_u64_plain() {
     let res = unpack(&buf[..written], &mut sink, inputs.len());
     assert_eq!(res.unwrap().len(), 0);
     assert_eq!(sink.vec[..inputs.len()], inputs);
+}
+
+#[test]
+fn test_unpack_u64_plain_iter() {
+    let inputs = [0u64, 1000, 1001, 1002, 1003, 2005, 2010, 3034, 4045, 5056, 6067, 7078];
+    let mut buf = [0u8; 512];
+    // NOTE: into_iter() of an array returns an Iterator<Item = &u64>, cloned() is needed to convert back to u64
+    let written = pack_u64(inputs.into_iter().cloned(), &mut buf, 0).unwrap();
+
+    let iter = IterU64Sink::new(&buf[0..written], inputs.len());
+    assert_eq!(iter.collect::<Vec<u64>>(), inputs);
 }
 
 #[test]
