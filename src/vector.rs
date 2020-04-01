@@ -118,6 +118,8 @@ impl BinaryVector {
     }
 }
 
+const GROW_BYTES: usize = 4096;
+
 /// A builder for a BinaryVector holding encoded/compressed u64/u32 values
 /// as 256-element FixedSections.   Buffers elements to be written and writes
 /// them in 256-element sections at a time.  This builder owns its own write buffer memory, expanding it
@@ -178,11 +180,30 @@ where T: Zero + Unsigned + Clone,
     /// Encodes all the values in write_buf.  Adjust the number of elements and other vector state.
     fn encode_section(&mut self) -> Result<(), CodingError> {
         assert!(self.write_buf.len() == FIXED_LEN);
-        self.offset = W::write(self.vect_buf.as_mut_slice(), self.offset, &self.write_buf[..])?;
+        self.offset = self.retry_grow(|s| W::write(s.vect_buf.as_mut_slice(),
+                                                   s.offset,
+                                                   &s.write_buf[..]))?;
         self.write_buf.clear();
         self.header.update_length(self.vect_buf.as_mut_slice(),
                                   (self.offset - NUM_HEADER_BYTES_TOTAL) as u32,
                                   self.header.num_elements + FIXED_LEN as u16)
+    }
+
+    /// Retries a func which might return Result<..., CodingError> by growing the vect_buf.
+    /// If it still fails then we return the Err.
+    fn retry_grow<F, U>(&mut self, mut func: F) -> Result<U, CodingError>
+        where F: FnMut(&mut Self) -> Result<U, CodingError> {
+        func(self).or_else(|err| {
+            match err {
+                CodingError::NotEnoughSpace => {
+                    // Expand vect_buf
+                    self.vect_buf.reserve(GROW_BYTES);
+                    self.vect_buf.resize(self.vect_buf.capacity(), 0);
+                    func(self)
+                }
+                _ => Err(err),
+            }
+        })
     }
 
     /// Appends a single value to this vector.  When a section fills up, will encode all values in write buffer
@@ -209,7 +230,7 @@ where T: Zero + Unsigned + Clone,
                 if self.write_buf.len() >= FIXED_LEN { self.encode_section()?; }
             // If empty, and we have at least FIXED_LEN nulls to go, insert a null section.
             } else if left >= (FIXED_LEN as u16) {
-                self.offset = NullFixedSect::write(self.vect_buf.as_mut_slice(), self.offset)?;
+                self.offset = self.retry_grow(|s| NullFixedSect::write(s.vect_buf.as_mut_slice(), s.offset))?;
                 self.header.update_length(self.vect_buf.as_mut_slice(),
                                           (self.offset - NUM_HEADER_BYTES_TOTAL) as u32,
                                           self.header.num_elements + FIXED_LEN as u16)?;
@@ -389,6 +410,37 @@ fn test_append_u64_mixed_nulls() {
     let reader = FixedSectIntReader::try_new(&finished_vec[..]).unwrap();
     assert_eq!(reader.num_elements(), total_elems);
     assert_eq!(reader.sect_iter().count(), 3);
+    assert_eq!(reader.num_null_sections(), 1);
+
+    let elems: Vec<u64> = fixed_iter_u64(&reader).collect();
+    assert_eq!(elems, all_data);
+}
+
+#[test]
+fn test_append_u64_mixed_nulls_grow() {
+    // Same as last test but use smaller buffer to force growing of encoding buffer
+    let data1: Vec<u64> = (0..300).collect();
+    let num_nulls = 350;
+
+    let total_elems = (data1.len() + num_nulls) * 2;
+
+    let mut all_data = Vec::<u64>::with_capacity(total_elems);
+    all_data.extend_from_slice(&data1[..]);
+    (0..num_nulls).for_each(|_i| all_data.push(0));
+    all_data.extend_from_slice(&data1[..]);
+    (0..num_nulls).for_each(|_i| all_data.push(0));
+
+    let mut appender = FixedSectU64Appender::new(300).unwrap();
+    data1.iter().for_each(|&e| appender.append(e).unwrap());
+    appender.append_nulls(num_nulls as u16).unwrap();
+    data1.iter().for_each(|&e| appender.append(e).unwrap());
+    appender.append_nulls(num_nulls as u16).unwrap();
+
+    let finished_vec = appender.finish(total_elems).unwrap();
+
+    let reader = FixedSectIntReader::try_new(&finished_vec[..]).unwrap();
+    assert_eq!(reader.num_elements(), total_elems);
+    assert_eq!(reader.sect_iter().count(), 6);
     assert_eq!(reader.num_null_sections(), 1);
 
     let elems: Vec<u64> = fixed_iter_u64(&reader).collect();
