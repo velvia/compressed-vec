@@ -434,8 +434,7 @@ pub fn unpack_f64_xor<'a>(encoded: &'a [u8],
                           sink: &mut DoubleXorSink,
                           num_values: usize) -> Result<&'a [u8], CodingError> {
     assert!(num_values >= 1);
-    let mut cursor = std::io::Cursor::new(encoded);
-    let init_value = direct_read_uint_le(&mut cursor, encoded)?;
+    let init_value = direct_read_uint_le(encoded, 0)?;
     sink.reset(init_value);
 
     unpack(&encoded[8..], sink, num_values - 1)
@@ -469,11 +468,10 @@ fn nibble_unpack8<'a, Output: Sink>(
         let mask: u64 = if num_bits >= 64 { std::u64::MAX } else { (1u64 << num_bits) - 1u64 };
         let mut bit_cursor = 0;
         let mut out_array = [0u64; 8];
-        let mut cursor = std::io::Cursor::new(inbuf);
-        cursor.set_position(2);
 
         // Read in first word
-        let mut in_word = direct_read_uint_le(&mut cursor, inbuf)?;
+        let mut in_word = direct_read_uint_le(inbuf, 2)?;
+        let mut pos = 10;
 
         for bit in 0..8 {
             if (nonzero_mask & (1 << bit)) != 0 {
@@ -485,9 +483,10 @@ fn nibble_unpack8<'a, Output: Sink>(
 
                 // If remaining bits are in next word, read next word -- if there's space
                 // We don't want to read the next word though if we're already at the end
-                if remaining <= num_bits && cursor.position() < (total_bytes as u64) {
+                if remaining <= num_bits && pos < (total_bytes as usize) {
                     // Read in MSB bits from next word
-                    in_word = direct_read_uint_le(&mut cursor, inbuf)?;
+                    in_word = direct_read_uint_le(inbuf, pos)?;
+                    pos += 8;
                     if remaining < num_bits {
                         let shifted = in_word << remaining;
                         out_word |= shifted & mask;

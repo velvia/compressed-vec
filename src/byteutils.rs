@@ -1,9 +1,6 @@
 use crate::error::CodingError;
 
-use byteorder::{LittleEndian, ReadBytesExt};
-use scroll::{Pwrite, LE};
-use std::io::Cursor;
-
+use scroll::{Pread, Pwrite, LE};
 
 /// Fast write of u64.  numbytes least significant bytes are written.
 /// Writes into out_buffer[offset..offset+numbytes].
@@ -32,20 +29,20 @@ pub fn direct_write_uint_le(out_buffer: &mut [u8],
 }
 
 /// Reads u64 value, even if there are less than 8 bytes left.  Reads are little endian.
-/// Cursor state is modified.  Will never read beyond end of inbuf.
+/// Will never read beyond end of inbuf.  Pos is position within inbuf.
 #[inline(always)]
-pub fn direct_read_uint_le(cursor: &mut Cursor<&[u8]>, inbuf: &[u8]) -> Result<u64, CodingError> {
-    let pos = cursor.position();
-    cursor.read_u64::<LittleEndian>()
-        // Not enough space.  Use read_uint to never read beyond remaining bytes - be safe
-        .or_else(|_e| {
-            let remaining = (inbuf.len() as isize) - (pos as isize);
-            if remaining > 0 {
-                cursor.set_position(pos);
-                cursor.read_uint::<LittleEndian>(remaining as usize)
-                    .map_err(|_e| CodingError::NotEnoughSpace)
-            } else {
-                Err(CodingError::NotEnoughSpace)
+pub fn direct_read_uint_le(inbuf: &[u8], pos: usize) -> Result<u64, CodingError> {
+    inbuf.pread_with::<u64>(pos, LE)
+        .or_else(|err| match err {
+            _ => {
+                let remaining = inbuf.len() as isize - (pos as isize);
+                if remaining > 0 {
+                    let mut buf = [0u8; 8];
+                    buf[0..remaining as usize].copy_from_slice(&inbuf[pos..]);
+                    Ok(u64::from_le_bytes(buf))
+                } else {
+                    Err(CodingError::NotEnoughSpace)
+                }
             }
         })
 }

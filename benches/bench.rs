@@ -3,7 +3,7 @@ extern crate criterion;
 extern crate compressed_vec;
 
 use criterion::{Criterion, Benchmark, Throughput};
-use compressed_vec::nibblepacking;
+use compressed_vec::{histogram, nibblepacking};
 
 fn nibblepack8_varlen(c: &mut Criterion) {
     // This method from Criterion allows us to run benchmarks and vary some variable.
@@ -94,8 +94,8 @@ fn repack_2d_deltas(c: &mut Criterion) {
             nibblepacking::pack_u64_delta(&inputs, &mut srcbuf).unwrap();
         }
 
-        let out_buf = Vec::with_capacity(4096);
-        let mut sink = nibblepacking::DeltaDiffPackSink::new(inputs.len(), out_buf);
+        let mut out_buf = [0u8; 4096];
+        let mut sink = histogram::DeltaDiffPackSink::new(inputs.len(), &mut out_buf);
 
         b.iter(|| {
             // Reset out_buf and sink last_deltas state
