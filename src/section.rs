@@ -178,7 +178,9 @@ impl<'a> SectionWriter<'a> {
     }
 }
 
-const FIXED_LEN: usize = 256;
+// This should really be 256 for SIMD query filtering purposes.
+// Don't adjust this unless you know what you're doing
+pub const FIXED_LEN: usize = 256;
 
 /// A FixedSection is a section with a fixed number of elements.
 /// Thus a compressed vector could be made of a number of FixedSections.
@@ -219,6 +221,15 @@ impl TryFrom<&[u8]> for FixedSectEnum {
     }
 }
 
+impl FixedSectEnum {
+    pub fn is_null(&self) -> bool {
+        match self {
+            FixedSectEnum::NullFixedSect(..) => true,
+            _ => false,
+        }
+    }
+}
+
 /// A NullFixedSect are 256 "Null" or 0 elements.
 /// For dictionary encoding they represent missing or Null values.
 /// Its binary representation consists solely of a SectionType::Null byte.
@@ -238,6 +249,14 @@ impl FixedSection for NullFixedSect {
     fn num_bytes(&self) -> usize { 1 }
 }
 
+/// A trait for FixedSection writers of a particular type
+pub trait FixedSectionWriter<T: Sized> {
+    /// Writes out/encodes a fixed section given input values of a particular type, starting at a given offset
+    /// into the destination buffer.
+    /// Returns the new offset after writing succeeds.
+    fn write(out_buf: &mut [u8], offset: usize, values: &[T]) -> Result<usize, CodingError>;
+}
+
 /// A FixedSection which is: NP=NibblePack'ed, u64 elements, Medium sized (<64KB)
 /// Binary layout (all offsets are from start of section/type byte)
 ///  +0   SectionType::NibblePackedU64Medium
@@ -254,7 +273,7 @@ impl NibblePackU64MedFixedSect {
     pub fn try_from(sect_bytes: &[u8]) -> Result<NibblePackU64MedFixedSect, CodingError> {
         let encoded_bytes = sect_bytes.pread_with(1, LE)
                                 .and_then(|n| {
-                                    if (n + 3) >= sect_bytes.len() as u16 { Ok(n) }
+                                    if (n + 3) <= sect_bytes.len() as u16 { Ok(n) }
                                     else { Err(scroll::Error::Custom("Slice not large enough".to_string())) }
                                 })?;
         Ok(NibblePackU64MedFixedSect { encoded_bytes })
@@ -263,12 +282,14 @@ impl NibblePackU64MedFixedSect {
     pub fn iter<'a>(&mut self, sect_bytes: &'a [u8]) -> nibblepacking::IterU64Sink<'a> {
         nibblepacking::IterU64Sink::new(&sect_bytes[3..], FIXED_LEN)
     }
+}
 
+impl FixedSectionWriter<u64> for NibblePackU64MedFixedSect {
     /// Writes out a fixed NibblePacked medium section, including correct length bytes,
     /// performing NibblePacking in the meantime.  Note: length value will be written last.
     /// Only after the write succeeds should vector metadata such as length/num bytes be updated.
     /// Returns the final offset after last bytes written.
-    pub fn write(out_buf: &mut [u8], offset: usize, values: &[u64]) -> Result<usize, CodingError> {
+    fn write(out_buf: &mut [u8], offset: usize, values: &[u64]) -> Result<usize, CodingError> {
         assert_eq!(values.len(), FIXED_LEN);
         out_buf.pwrite_with(SectionType::NibblePackedU64Medium as u8, offset, LE)?;
         let mut off = offset + 3;

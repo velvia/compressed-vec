@@ -5,6 +5,7 @@ pub enum CodingError {
     BadOffset(usize),
     InvalidSectionType(u8),
     InvalidFormat(String),
+    InvalidNumRows(usize, usize),    // Number passed into finish(), number of actual rows written so far
     ScrollErr(String),
 }
 

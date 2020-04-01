@@ -11,6 +11,7 @@ plain = "0.2.3"
 scroll = { version = "0.10", features = ["derive"] }
 arrayref = "*"
 enum_dispatch = "0.2"
+num = "*"
 
 [dev-dependencies]
 criterion = "^0.2"

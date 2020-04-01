@@ -3,7 +3,7 @@ extern crate memoffset;
 
 pub mod nibblepacking;
 pub mod byteutils;
-mod vector;
+pub mod vector;
 pub mod histogram;
 pub mod section;
 pub mod error;
