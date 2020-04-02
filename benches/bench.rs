@@ -54,8 +54,8 @@ fn increasing_nonzeroes_u64x64(num_nonzeroes: usize) -> [u64; 64] {
 }
 
 fn sinewave_varnonzeros_u32(fract_nonzeroes: f32, len: usize) -> Vec<u32> {
-    let amp = 7.9 / fract_nonzeroes;
-    let dist = 15.9 - amp;
+    let amp = 7.0 / fract_nonzeroes;
+    let dist = 15.0 - amp;
     // Sinusoid between -1 and 1 with period of ~20
     (0..len).map(|i| ((i as f32) * std::f32::consts::PI / 10.0).sin())
     // Change amplitude to 8/fract_nonzeroes; center so max is 16:
@@ -94,7 +94,6 @@ fn unpack_delta_u64s(c: &mut Criterion) {
 use section::FixedSectionWriter;
 
 fn section32_decode_dense_lowcard_varnonzeroes(c: &mut Criterion) {
-    nibblepack_simd::init();
     c.bench_function_over_inputs("decode u32 section: dense low-card: varying nonzero %", |b, &&nonzero_f| {
         let inputs = sinewave_varnonzeros_u32(nonzero_f, 256);
         let mut buf = [0u8; 1024];

@@ -7,7 +7,6 @@ use crate::byteutils::*;
 use crate::error::CodingError;
 use crate::nibblepacking::*;
 
-use lazy_static::*;
 use packed_simd::{shuffle, u64x4, u32x8};
 
 
@@ -76,28 +75,288 @@ const U32_SIMD_ZEROES: u32x8 = u32x8::splat(0);
 
 // Shuffles used in unpacking.  Given input bitmask, it calculates the shuffle
 // matrix needed to "expand" or move the elements to the right place given null elements.
-// from is the source element number.
-lazy_static! {
-    static ref SHUFFLE_UNPACK_IDX_U32: [u32x8; 256] = {
-        let mut shuffle_indices = [u32x8::splat(0); 256];
-        for bitmask in 0usize..256 {
-            let mut from_pos = 0;
-            let mut indices = [0u32; 8];
-            for to_pos in 0..8 {
-                // If bit in bitmask is on, then map from_pos to current pos
-                if bitmask & (1 << to_pos) != 0 {
-                    indices[to_pos] = from_pos;
-                    from_pos += 1;
-                // If bit is off, then use the last index into which 0 is stuffed.
-                } else {
-                    indices[to_pos] = 7;
-                }
-            }
-            shuffle_indices[bitmask as usize] = u32x8::from(indices);
-        }
-        shuffle_indices
-    };
-}
+// from is the source element number.  NOTE: lazy_static was too slow so these constants were
+// generated using the following code
+// lazy_static! {
+//     static ref SHUFFLE_UNPACK_IDX_U32: [u32x8; 256] = {
+//         let mut shuffle_indices = [u32x8::splat(0); 256];
+//         for bitmask in 0usize..256 {
+//             let mut from_pos = 0;
+//             let mut indices = [0u32; 8];
+//             for to_pos in 0..8 {
+//                 // If bit in bitmask is on, then map from_pos to current pos
+//                 if bitmask & (1 << to_pos) != 0 {
+//                     indices[to_pos] = from_pos;
+//                     from_pos += 1;
+//                 // If bit is off, then use the last index into which 0 is stuffed.
+//                 } else {
+//                     indices[to_pos] = 7;
+//                 }
+//             }
+//             shuffle_indices[bitmask as usize] = u32x8::from(indices);
+//         }
+//         shuffle_indices
+//     };
+// }
+
+const SHUFFLE_UNPACK_IDX_U32: [u32x8; 256] = [
+    u32x8::new(7, 7, 7, 7, 7, 7, 7, 7),
+    u32x8::new(0, 7, 7, 7, 7, 7, 7, 7),
+    u32x8::new(7, 0, 7, 7, 7, 7, 7, 7),
+    u32x8::new(0, 1, 7, 7, 7, 7, 7, 7),
+    u32x8::new(7, 7, 0, 7, 7, 7, 7, 7),
+    u32x8::new(0, 7, 1, 7, 7, 7, 7, 7),
+    u32x8::new(7, 0, 1, 7, 7, 7, 7, 7),
+    u32x8::new(0, 1, 2, 7, 7, 7, 7, 7),
+    u32x8::new(7, 7, 7, 0, 7, 7, 7, 7),
+    u32x8::new(0, 7, 7, 1, 7, 7, 7, 7),
+    u32x8::new(7, 0, 7, 1, 7, 7, 7, 7),
+    u32x8::new(0, 1, 7, 2, 7, 7, 7, 7),
+    u32x8::new(7, 7, 0, 1, 7, 7, 7, 7),
+    u32x8::new(0, 7, 1, 2, 7, 7, 7, 7),
+    u32x8::new(7, 0, 1, 2, 7, 7, 7, 7),
+    u32x8::new(0, 1, 2, 3, 7, 7, 7, 7),
+    u32x8::new(7, 7, 7, 7, 0, 7, 7, 7),
+    u32x8::new(0, 7, 7, 7, 1, 7, 7, 7),
+    u32x8::new(7, 0, 7, 7, 1, 7, 7, 7),
+    u32x8::new(0, 1, 7, 7, 2, 7, 7, 7),
+    u32x8::new(7, 7, 0, 7, 1, 7, 7, 7),
+    u32x8::new(0, 7, 1, 7, 2, 7, 7, 7),
+    u32x8::new(7, 0, 1, 7, 2, 7, 7, 7),
+    u32x8::new(0, 1, 2, 7, 3, 7, 7, 7),
+    u32x8::new(7, 7, 7, 0, 1, 7, 7, 7),
+    u32x8::new(0, 7, 7, 1, 2, 7, 7, 7),
+    u32x8::new(7, 0, 7, 1, 2, 7, 7, 7),
+    u32x8::new(0, 1, 7, 2, 3, 7, 7, 7),
+    u32x8::new(7, 7, 0, 1, 2, 7, 7, 7),
+    u32x8::new(0, 7, 1, 2, 3, 7, 7, 7),
+    u32x8::new(7, 0, 1, 2, 3, 7, 7, 7),
+    u32x8::new(0, 1, 2, 3, 4, 7, 7, 7),
+    u32x8::new(7, 7, 7, 7, 7, 0, 7, 7),
+    u32x8::new(0, 7, 7, 7, 7, 1, 7, 7),
+    u32x8::new(7, 0, 7, 7, 7, 1, 7, 7),
+    u32x8::new(0, 1, 7, 7, 7, 2, 7, 7),
+    u32x8::new(7, 7, 0, 7, 7, 1, 7, 7),
+    u32x8::new(0, 7, 1, 7, 7, 2, 7, 7),
+    u32x8::new(7, 0, 1, 7, 7, 2, 7, 7),
+    u32x8::new(0, 1, 2, 7, 7, 3, 7, 7),
+    u32x8::new(7, 7, 7, 0, 7, 1, 7, 7),
+    u32x8::new(0, 7, 7, 1, 7, 2, 7, 7),
+    u32x8::new(7, 0, 7, 1, 7, 2, 7, 7),
+    u32x8::new(0, 1, 7, 2, 7, 3, 7, 7),
+    u32x8::new(7, 7, 0, 1, 7, 2, 7, 7),
+    u32x8::new(0, 7, 1, 2, 7, 3, 7, 7),
+    u32x8::new(7, 0, 1, 2, 7, 3, 7, 7),
+    u32x8::new(0, 1, 2, 3, 7, 4, 7, 7),
+    u32x8::new(7, 7, 7, 7, 0, 1, 7, 7),
+    u32x8::new(0, 7, 7, 7, 1, 2, 7, 7),
+    u32x8::new(7, 0, 7, 7, 1, 2, 7, 7),
+    u32x8::new(0, 1, 7, 7, 2, 3, 7, 7),
+    u32x8::new(7, 7, 0, 7, 1, 2, 7, 7),
+    u32x8::new(0, 7, 1, 7, 2, 3, 7, 7),
+    u32x8::new(7, 0, 1, 7, 2, 3, 7, 7),
+    u32x8::new(0, 1, 2, 7, 3, 4, 7, 7),
+    u32x8::new(7, 7, 7, 0, 1, 2, 7, 7),
+    u32x8::new(0, 7, 7, 1, 2, 3, 7, 7),
+    u32x8::new(7, 0, 7, 1, 2, 3, 7, 7),
+    u32x8::new(0, 1, 7, 2, 3, 4, 7, 7),
+    u32x8::new(7, 7, 0, 1, 2, 3, 7, 7),
+    u32x8::new(0, 7, 1, 2, 3, 4, 7, 7),
+    u32x8::new(7, 0, 1, 2, 3, 4, 7, 7),
+    u32x8::new(0, 1, 2, 3, 4, 5, 7, 7),
+    u32x8::new(7, 7, 7, 7, 7, 7, 0, 7),
+    u32x8::new(0, 7, 7, 7, 7, 7, 1, 7),
+    u32x8::new(7, 0, 7, 7, 7, 7, 1, 7),
+    u32x8::new(0, 1, 7, 7, 7, 7, 2, 7),
+    u32x8::new(7, 7, 0, 7, 7, 7, 1, 7),
+    u32x8::new(0, 7, 1, 7, 7, 7, 2, 7),
+    u32x8::new(7, 0, 1, 7, 7, 7, 2, 7),
+    u32x8::new(0, 1, 2, 7, 7, 7, 3, 7),
+    u32x8::new(7, 7, 7, 0, 7, 7, 1, 7),
+    u32x8::new(0, 7, 7, 1, 7, 7, 2, 7),
+    u32x8::new(7, 0, 7, 1, 7, 7, 2, 7),
+    u32x8::new(0, 1, 7, 2, 7, 7, 3, 7),
+    u32x8::new(7, 7, 0, 1, 7, 7, 2, 7),
+    u32x8::new(0, 7, 1, 2, 7, 7, 3, 7),
+    u32x8::new(7, 0, 1, 2, 7, 7, 3, 7),
+    u32x8::new(0, 1, 2, 3, 7, 7, 4, 7),
+    u32x8::new(7, 7, 7, 7, 0, 7, 1, 7),
+    u32x8::new(0, 7, 7, 7, 1, 7, 2, 7),
+    u32x8::new(7, 0, 7, 7, 1, 7, 2, 7),
+    u32x8::new(0, 1, 7, 7, 2, 7, 3, 7),
+    u32x8::new(7, 7, 0, 7, 1, 7, 2, 7),
+    u32x8::new(0, 7, 1, 7, 2, 7, 3, 7),
+    u32x8::new(7, 0, 1, 7, 2, 7, 3, 7),
+    u32x8::new(0, 1, 2, 7, 3, 7, 4, 7),
+    u32x8::new(7, 7, 7, 0, 1, 7, 2, 7),
+    u32x8::new(0, 7, 7, 1, 2, 7, 3, 7),
+    u32x8::new(7, 0, 7, 1, 2, 7, 3, 7),
+    u32x8::new(0, 1, 7, 2, 3, 7, 4, 7),
+    u32x8::new(7, 7, 0, 1, 2, 7, 3, 7),
+    u32x8::new(0, 7, 1, 2, 3, 7, 4, 7),
+    u32x8::new(7, 0, 1, 2, 3, 7, 4, 7),
+    u32x8::new(0, 1, 2, 3, 4, 7, 5, 7),
+    u32x8::new(7, 7, 7, 7, 7, 0, 1, 7),
+    u32x8::new(0, 7, 7, 7, 7, 1, 2, 7),
+    u32x8::new(7, 0, 7, 7, 7, 1, 2, 7),
+    u32x8::new(0, 1, 7, 7, 7, 2, 3, 7),
+    u32x8::new(7, 7, 0, 7, 7, 1, 2, 7),
+    u32x8::new(0, 7, 1, 7, 7, 2, 3, 7),
+    u32x8::new(7, 0, 1, 7, 7, 2, 3, 7),
+    u32x8::new(0, 1, 2, 7, 7, 3, 4, 7),
+    u32x8::new(7, 7, 7, 0, 7, 1, 2, 7),
+    u32x8::new(0, 7, 7, 1, 7, 2, 3, 7),
+    u32x8::new(7, 0, 7, 1, 7, 2, 3, 7),
+    u32x8::new(0, 1, 7, 2, 7, 3, 4, 7),
+    u32x8::new(7, 7, 0, 1, 7, 2, 3, 7),
+    u32x8::new(0, 7, 1, 2, 7, 3, 4, 7),
+    u32x8::new(7, 0, 1, 2, 7, 3, 4, 7),
+    u32x8::new(0, 1, 2, 3, 7, 4, 5, 7),
+    u32x8::new(7, 7, 7, 7, 0, 1, 2, 7),
+    u32x8::new(0, 7, 7, 7, 1, 2, 3, 7),
+    u32x8::new(7, 0, 7, 7, 1, 2, 3, 7),
+    u32x8::new(0, 1, 7, 7, 2, 3, 4, 7),
+    u32x8::new(7, 7, 0, 7, 1, 2, 3, 7),
+    u32x8::new(0, 7, 1, 7, 2, 3, 4, 7),
+    u32x8::new(7, 0, 1, 7, 2, 3, 4, 7),
+    u32x8::new(0, 1, 2, 7, 3, 4, 5, 7),
+    u32x8::new(7, 7, 7, 0, 1, 2, 3, 7),
+    u32x8::new(0, 7, 7, 1, 2, 3, 4, 7),
+    u32x8::new(7, 0, 7, 1, 2, 3, 4, 7),
+    u32x8::new(0, 1, 7, 2, 3, 4, 5, 7),
+    u32x8::new(7, 7, 0, 1, 2, 3, 4, 7),
+    u32x8::new(0, 7, 1, 2, 3, 4, 5, 7),
+    u32x8::new(7, 0, 1, 2, 3, 4, 5, 7),
+    u32x8::new(0, 1, 2, 3, 4, 5, 6, 7),
+    u32x8::new(7, 7, 7, 7, 7, 7, 7, 0),
+    u32x8::new(0, 7, 7, 7, 7, 7, 7, 1),
+    u32x8::new(7, 0, 7, 7, 7, 7, 7, 1),
+    u32x8::new(0, 1, 7, 7, 7, 7, 7, 2),
+    u32x8::new(7, 7, 0, 7, 7, 7, 7, 1),
+    u32x8::new(0, 7, 1, 7, 7, 7, 7, 2),
+    u32x8::new(7, 0, 1, 7, 7, 7, 7, 2),
+    u32x8::new(0, 1, 2, 7, 7, 7, 7, 3),
+    u32x8::new(7, 7, 7, 0, 7, 7, 7, 1),
+    u32x8::new(0, 7, 7, 1, 7, 7, 7, 2),
+    u32x8::new(7, 0, 7, 1, 7, 7, 7, 2),
+    u32x8::new(0, 1, 7, 2, 7, 7, 7, 3),
+    u32x8::new(7, 7, 0, 1, 7, 7, 7, 2),
+    u32x8::new(0, 7, 1, 2, 7, 7, 7, 3),
+    u32x8::new(7, 0, 1, 2, 7, 7, 7, 3),
+    u32x8::new(0, 1, 2, 3, 7, 7, 7, 4),
+    u32x8::new(7, 7, 7, 7, 0, 7, 7, 1),
+    u32x8::new(0, 7, 7, 7, 1, 7, 7, 2),
+    u32x8::new(7, 0, 7, 7, 1, 7, 7, 2),
+    u32x8::new(0, 1, 7, 7, 2, 7, 7, 3),
+    u32x8::new(7, 7, 0, 7, 1, 7, 7, 2),
+    u32x8::new(0, 7, 1, 7, 2, 7, 7, 3),
+    u32x8::new(7, 0, 1, 7, 2, 7, 7, 3),
+    u32x8::new(0, 1, 2, 7, 3, 7, 7, 4),
+    u32x8::new(7, 7, 7, 0, 1, 7, 7, 2),
+    u32x8::new(0, 7, 7, 1, 2, 7, 7, 3),
+    u32x8::new(7, 0, 7, 1, 2, 7, 7, 3),
+    u32x8::new(0, 1, 7, 2, 3, 7, 7, 4),
+    u32x8::new(7, 7, 0, 1, 2, 7, 7, 3),
+    u32x8::new(0, 7, 1, 2, 3, 7, 7, 4),
+    u32x8::new(7, 0, 1, 2, 3, 7, 7, 4),
+    u32x8::new(0, 1, 2, 3, 4, 7, 7, 5),
+    u32x8::new(7, 7, 7, 7, 7, 0, 7, 1),
+    u32x8::new(0, 7, 7, 7, 7, 1, 7, 2),
+    u32x8::new(7, 0, 7, 7, 7, 1, 7, 2),
+    u32x8::new(0, 1, 7, 7, 7, 2, 7, 3),
+    u32x8::new(7, 7, 0, 7, 7, 1, 7, 2),
+    u32x8::new(0, 7, 1, 7, 7, 2, 7, 3),
+    u32x8::new(7, 0, 1, 7, 7, 2, 7, 3),
+    u32x8::new(0, 1, 2, 7, 7, 3, 7, 4),
+    u32x8::new(7, 7, 7, 0, 7, 1, 7, 2),
+    u32x8::new(0, 7, 7, 1, 7, 2, 7, 3),
+    u32x8::new(7, 0, 7, 1, 7, 2, 7, 3),
+    u32x8::new(0, 1, 7, 2, 7, 3, 7, 4),
+    u32x8::new(7, 7, 0, 1, 7, 2, 7, 3),
+    u32x8::new(0, 7, 1, 2, 7, 3, 7, 4),
+    u32x8::new(7, 0, 1, 2, 7, 3, 7, 4),
+    u32x8::new(0, 1, 2, 3, 7, 4, 7, 5),
+    u32x8::new(7, 7, 7, 7, 0, 1, 7, 2),
+    u32x8::new(0, 7, 7, 7, 1, 2, 7, 3),
+    u32x8::new(7, 0, 7, 7, 1, 2, 7, 3),
+    u32x8::new(0, 1, 7, 7, 2, 3, 7, 4),
+    u32x8::new(7, 7, 0, 7, 1, 2, 7, 3),
+    u32x8::new(0, 7, 1, 7, 2, 3, 7, 4),
+    u32x8::new(7, 0, 1, 7, 2, 3, 7, 4),
+    u32x8::new(0, 1, 2, 7, 3, 4, 7, 5),
+    u32x8::new(7, 7, 7, 0, 1, 2, 7, 3),
+    u32x8::new(0, 7, 7, 1, 2, 3, 7, 4),
+    u32x8::new(7, 0, 7, 1, 2, 3, 7, 4),
+    u32x8::new(0, 1, 7, 2, 3, 4, 7, 5),
+    u32x8::new(7, 7, 0, 1, 2, 3, 7, 4),
+    u32x8::new(0, 7, 1, 2, 3, 4, 7, 5),
+    u32x8::new(7, 0, 1, 2, 3, 4, 7, 5),
+    u32x8::new(0, 1, 2, 3, 4, 5, 7, 6),
+    u32x8::new(7, 7, 7, 7, 7, 7, 0, 1),
+    u32x8::new(0, 7, 7, 7, 7, 7, 1, 2),
+    u32x8::new(7, 0, 7, 7, 7, 7, 1, 2),
+    u32x8::new(0, 1, 7, 7, 7, 7, 2, 3),
+    u32x8::new(7, 7, 0, 7, 7, 7, 1, 2),
+    u32x8::new(0, 7, 1, 7, 7, 7, 2, 3),
+    u32x8::new(7, 0, 1, 7, 7, 7, 2, 3),
+    u32x8::new(0, 1, 2, 7, 7, 7, 3, 4),
+    u32x8::new(7, 7, 7, 0, 7, 7, 1, 2),
+    u32x8::new(0, 7, 7, 1, 7, 7, 2, 3),
+    u32x8::new(7, 0, 7, 1, 7, 7, 2, 3),
+    u32x8::new(0, 1, 7, 2, 7, 7, 3, 4),
+    u32x8::new(7, 7, 0, 1, 7, 7, 2, 3),
+    u32x8::new(0, 7, 1, 2, 7, 7, 3, 4),
+    u32x8::new(7, 0, 1, 2, 7, 7, 3, 4),
+    u32x8::new(0, 1, 2, 3, 7, 7, 4, 5),
+    u32x8::new(7, 7, 7, 7, 0, 7, 1, 2),
+    u32x8::new(0, 7, 7, 7, 1, 7, 2, 3),
+    u32x8::new(7, 0, 7, 7, 1, 7, 2, 3),
+    u32x8::new(0, 1, 7, 7, 2, 7, 3, 4),
+    u32x8::new(7, 7, 0, 7, 1, 7, 2, 3),
+    u32x8::new(0, 7, 1, 7, 2, 7, 3, 4),
+    u32x8::new(7, 0, 1, 7, 2, 7, 3, 4),
+    u32x8::new(0, 1, 2, 7, 3, 7, 4, 5),
+    u32x8::new(7, 7, 7, 0, 1, 7, 2, 3),
+    u32x8::new(0, 7, 7, 1, 2, 7, 3, 4),
+    u32x8::new(7, 0, 7, 1, 2, 7, 3, 4),
+    u32x8::new(0, 1, 7, 2, 3, 7, 4, 5),
+    u32x8::new(7, 7, 0, 1, 2, 7, 3, 4),
+    u32x8::new(0, 7, 1, 2, 3, 7, 4, 5),
+    u32x8::new(7, 0, 1, 2, 3, 7, 4, 5),
+    u32x8::new(0, 1, 2, 3, 4, 7, 5, 6),
+    u32x8::new(7, 7, 7, 7, 7, 0, 1, 2),
+    u32x8::new(0, 7, 7, 7, 7, 1, 2, 3),
+    u32x8::new(7, 0, 7, 7, 7, 1, 2, 3),
+    u32x8::new(0, 1, 7, 7, 7, 2, 3, 4),
+    u32x8::new(7, 7, 0, 7, 7, 1, 2, 3),
+    u32x8::new(0, 7, 1, 7, 7, 2, 3, 4),
+    u32x8::new(7, 0, 1, 7, 7, 2, 3, 4),
+    u32x8::new(0, 1, 2, 7, 7, 3, 4, 5),
+    u32x8::new(7, 7, 7, 0, 7, 1, 2, 3),
+    u32x8::new(0, 7, 7, 1, 7, 2, 3, 4),
+    u32x8::new(7, 0, 7, 1, 7, 2, 3, 4),
+    u32x8::new(0, 1, 7, 2, 7, 3, 4, 5),
+    u32x8::new(7, 7, 0, 1, 7, 2, 3, 4),
+    u32x8::new(0, 7, 1, 2, 7, 3, 4, 5),
+    u32x8::new(7, 0, 1, 2, 7, 3, 4, 5),
+    u32x8::new(0, 1, 2, 3, 7, 4, 5, 6),
+    u32x8::new(7, 7, 7, 7, 0, 1, 2, 3),
+    u32x8::new(0, 7, 7, 7, 1, 2, 3, 4),
+    u32x8::new(7, 0, 7, 7, 1, 2, 3, 4),
+    u32x8::new(0, 1, 7, 7, 2, 3, 4, 5),
+    u32x8::new(7, 7, 0, 7, 1, 2, 3, 4),
+    u32x8::new(0, 7, 1, 7, 2, 3, 4, 5),
+    u32x8::new(7, 0, 1, 7, 2, 3, 4, 5),
+    u32x8::new(0, 1, 2, 7, 3, 4, 5, 6),
+    u32x8::new(7, 7, 7, 0, 1, 2, 3, 4),
+    u32x8::new(0, 7, 7, 1, 2, 3, 4, 5),
+    u32x8::new(7, 0, 7, 1, 2, 3, 4, 5),
+    u32x8::new(0, 1, 7, 2, 3, 4, 5, 6),
+    u32x8::new(7, 7, 0, 1, 2, 3, 4, 5),
+    u32x8::new(0, 7, 1, 2, 3, 4, 5, 6),
+    u32x8::new(7, 0, 1, 2, 3, 4, 5, 6),
+    u32x8::new(0, 1, 2, 3, 4, 5, 6, 7),
+];
 
 /// u32 SIMD sink
 pub trait SinkU32 {
@@ -144,6 +403,7 @@ impl SinkU32 for U32_256Sink {
     }
 }
 
+// TODO: these can be optimized using gather AVX2 nstructions
 #[inline]
 fn preload_u32x8_3_4_nibble(buf: &[u8],
                             stride: usize,
@@ -159,6 +419,36 @@ fn preload_u32x8_3_4_nibble(buf: &[u8],
     } else { (0, 0) };
     let simd_word = u32x8::new(words0, words0, words1, words1, words2, words2, words3, words3);
     Ok((simd_word, total_bytes as u32))
+}
+
+// Optimized shuffle using AVX2 instruction, which is not available in packed_simd for some reason ??
+#[cfg(all(any(target_arch = "x86", target_arch = "x86_64"),
+          target_feature = "avx2"))]
+#[inline(always)]
+fn unpack_shuffle(input: u32x8, nonzero_mask: u8) -> u32x8 {
+    #[cfg(target_arch = "x86")]
+    use core::arch::x86::_mm256_permutevar8x32_epi32;
+    #[cfg(target_arch = "x86_64")]
+    use core::arch::x86_64::_mm256_permutevar8x32_epi32;
+
+    let shifted1 = input.replace(7, 0);  // Stuff 0 into unused final slot
+    unsafe {
+        std::mem::transmute(
+            _mm256_permutevar8x32_epi32(
+                std::mem::transmute(shifted1),
+                std::mem::transmute(SHUFFLE_UNPACK_IDX_U32[nonzero_mask as usize])
+            )
+        )
+    }
+}
+
+// Unoptimized using packed_simd which doesn't support above instruction
+#[cfg(not(all(any(target_arch = "x86", target_arch = "x86_64"),
+          target_feature = "avx2")))]
+#[inline(always)]
+fn unpack_shuffle(input: u32x8, nonzero_mask: u8) -> u32x8 {
+    let shifted1 = input.replace(7, 0);  // Stuff 0 into unused final slot
+    shifted1.shuffle1_dyn(SHUFFLE_UNPACK_IDX_U32[nonzero_mask as usize])
 }
 
 /// SIMD-based decoding of NibblePacked data to u32x8.  Errors out if number of nibbles exceeds 8.
@@ -214,10 +504,7 @@ pub fn unpack8_u32_simd<'a, Output: SinkU32>(
         let leftshifted = if (trailing_zeros == 0) { anded } else { anded.shl(trailing_zeros as u32) };
 
         // Step 5. Shuffle inputs based on nonzero mask to proper places
-        let shuffled = if (nonzero_count == 8) { leftshifted } else {
-            let shifted1 = leftshifted.replace(7, 0);  // Stuff 0 into unused final slot
-            shifted1.shuffle1_dyn(SHUFFLE_UNPACK_IDX_U32[nonzero_mask as usize])
-        };
+        let shuffled = if (nonzero_count == 8) { leftshifted } else { unpack_shuffle(leftshifted, nonzero_mask) };
 
         // Step 6. Send to sink, and advance input slice
         output.process(shuffled);
@@ -225,15 +512,10 @@ pub fn unpack8_u32_simd<'a, Output: SinkU32>(
     }
 }
 
-/// Initialize lazy data structures so they are warmed up
-pub fn init() {
-    SHUFFLE_UNPACK_IDX_U32[0];
-}
 
 #[test]
 fn test_unpack_u32simd_1_2nibbles() {
     let mut buf = [55u8; 512];
-    dbg!(&SHUFFLE_UNPACK_IDX_U32[..32]);
 
     // 1 nibble, no nulls
     let mut sink = U32_256Sink::new();
@@ -284,14 +566,6 @@ fn test_unpack_u32simd_1_2nibbles() {
 
     unpack8_u32_simd(rest2, &mut sink).unwrap();
     assert_eq!(sink.values[8..12], data2[8..12]);
-}
-
-fn make_nonzeroes_u64x64(num_nonzeroes: usize) -> [u64; 64] {
-    let mut inputs = [0u64; 64];
-    for i in 1..=num_nonzeroes {
-        inputs[i] = (((i as f32) * std::f32::consts::PI / (num_nonzeroes as f32)).sin() * 1000.0) as u64
-    }
-    inputs
 }
 
 #[test]
