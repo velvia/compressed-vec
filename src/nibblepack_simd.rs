@@ -162,7 +162,7 @@ fn preload_u32x8_3_4_nibble(buf: &[u8],
 }
 
 /// SIMD-based decoding of NibblePacked data to u32x8.  Errors out if number of nibbles exceeds 8.
-#[inline]
+#[inline(always)]
 pub fn unpack8_u32_simd<'a, Output: SinkU32>(
     inbuf: &'a [u8],
     output: &mut Output,
@@ -223,6 +223,11 @@ pub fn unpack8_u32_simd<'a, Output: SinkU32>(
         output.process(shuffled);
         Ok(&inbuf[(2 + num_bytes as usize)..])
     }
+}
+
+/// Initialize lazy data structures so they are warmed up
+pub fn init() {
+    SHUFFLE_UNPACK_IDX_U32[0];
 }
 
 #[test]
@@ -291,7 +296,6 @@ fn make_nonzeroes_u64x64(num_nonzeroes: usize) -> [u64; 64] {
 
 #[test]
 fn test_unpack_u32simd_3_4nibbles() {
-    dbg!(&make_nonzeroes_u64x64(63)[32..]);
     // Tests edge case where 4 nibbles (16 bits) pack edge
     // 4 nibbles = 2^16, so values < 65536
     let inputs = [65535u64; 8];

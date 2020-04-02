@@ -3,7 +3,7 @@ extern crate criterion;
 extern crate compressed_vec;
 
 use criterion::{Criterion, Benchmark, Throughput};
-use compressed_vec::{histogram, nibblepacking};
+use compressed_vec::{histogram, nibblepacking, nibblepack_simd, section};
 
 fn nibblepack8_varlen(c: &mut Criterion) {
     // This method from Criterion allows us to run benchmarks and vary some variable.
@@ -53,6 +53,19 @@ fn increasing_nonzeroes_u64x64(num_nonzeroes: usize) -> [u64; 64] {
     inputs
 }
 
+fn sinewave_varnonzeros_u32(fract_nonzeroes: f32, len: usize) -> Vec<u32> {
+    let amp = 7.9 / fract_nonzeroes;
+    let dist = 15.9 - amp;
+    // Sinusoid between -1 and 1 with period of ~20
+    (0..len).map(|i| ((i as f32) * std::f32::consts::PI / 10.0).sin())
+    // Change amplitude to 8/fract_nonzeroes; center so max is 16:
+    // If value is negative, turn it into a zero
+            .map(|i| {
+                let new_value = i * amp + dist;
+                if new_value >= 0.0 { new_value as u32 } else { 0 }
+            }).collect()
+}
+
 // Pack 64 u64's, variable number of them are 0
 fn pack_delta_u64s_varlen(c: &mut Criterion) {
     c.bench_function_over_inputs("pack delta u64s varying nonzero numbers", |b, &&nonzeroes| {
@@ -76,6 +89,22 @@ fn unpack_delta_u64s(c: &mut Criterion) {
             nibblepacking::unpack(&buf[..], &mut sink, inputs.len()).unwrap();
         })
     });
+}
+
+use section::FixedSectionWriter;
+
+fn section32_decode_dense_lowcard_varnonzeroes(c: &mut Criterion) {
+    nibblepack_simd::init();
+    c.bench_function_over_inputs("decode u32 section: dense low-card: varying nonzero %", |b, &&nonzero_f| {
+        let inputs = sinewave_varnonzeros_u32(nonzero_f, 256);
+        let mut buf = [0u8; 1024];
+        section::NibblePackU32MedFixedSect::write(&mut buf, 0, &inputs[..]).unwrap();
+
+        b.iter(|| {
+            let mut sink = nibblepack_simd::U32_256Sink::new();
+            section::NibblePackU32MedFixedSect::decode_to_sink(&buf, &mut sink).unwrap();
+        });
+    }, &[0.05, 0.25, 0.5, 0.9, 1.0]);
 }
 
 const BATCH_SIZE: usize = 100;
@@ -112,8 +141,10 @@ fn repack_2d_deltas(c: &mut Criterion) {
 }
 
 criterion_group!(benches, //nibblepack8_varlen,
-                          nibblepack8_varnumbits,
+                          // nibblepack8_varnumbits,
                           pack_delta_u64s_varlen,
                           unpack_delta_u64s,
-                          repack_2d_deltas);
+                          section32_decode_dense_lowcard_varnonzeroes,
+                          // repack_2d_deltas,
+                          );
 criterion_main!(benches);

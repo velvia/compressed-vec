@@ -343,6 +343,7 @@ pub fn fixed_iter_u64<'a>(reader: &FixedSectIntReader<'a>) -> impl Iterator<Item
                 Box::new(inner_sect.iter(s_bytes)),
             FixedSectEnum::NullFixedSect(_) =>
                 Box::new((0..FIXED_LEN).map(|_s| 0u64)),
+            _ => panic!("No other section types supported"),
         };
         iter
     }).take(reader.num_elements())
