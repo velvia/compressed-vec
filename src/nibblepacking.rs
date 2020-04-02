@@ -462,6 +462,7 @@ fn nibble_unpack8<'a, Output: Sink>(
         output.process(&ZERO_ELEMS);
         Ok(&inbuf[1..])
     } else {
+        if inbuf.len() < 2 { return Err(CodingError::NotEnoughSpace) }
         let num_bits = ((inbuf[1] >> 4) + 1) * 4;
         let trailing_zeros = (inbuf[1] & 0x0f) * 4;
         let total_bytes = 2 + (num_bits as u32 * nonzero_mask.count_ones() + 7) / 8;
@@ -702,8 +703,7 @@ fn unpack8_partial_oddnibbles() {
 fn pack_unpack_u64_plain() {
     let inputs = [0u64, 1000, 1001, 1002, 1003, 2005, 2010, 3034, 4045, 5056, 6067, 7078];
     let mut buf = [0u8; 512];
-    // NOTE: into_iter() of an array returns an Iterator<Item = &u64>, cloned() is needed to convert back to u64
-    let written = pack_u64(inputs.into_iter().cloned(), &mut buf, 0).unwrap();
+    let written = pack_u64(inputs.iter().cloned(), &mut buf, 0).unwrap();
     println!("Packed {} u64 inputs (plain) into {} bytes", inputs.len(), written);
 
     let mut sink = LongSink::new();
@@ -717,7 +717,7 @@ fn test_unpack_u64_plain_iter() {
     let inputs = [0u64, 1000, 1001, 1002, 1003, 2005, 2010, 3034, 4045, 5056, 6067, 7078];
     let mut buf = [0u8; 512];
     // NOTE: into_iter() of an array returns an Iterator<Item = &u64>, cloned() is needed to convert back to u64
-    let written = pack_u64(inputs.into_iter().cloned(), &mut buf, 0).unwrap();
+    let written = pack_u64(inputs.iter().cloned(), &mut buf, 0).unwrap();
 
     let iter = IterU64Sink::new(&buf[0..written], inputs.len());
     assert_eq!(iter.collect::<Vec<u64>>(), inputs);
@@ -741,7 +741,7 @@ fn pack_unpack_u64_deltas() {
 fn pack_unpack_f64_xor() {
     let inputs = [0f64, 0.5, 2.5, 10., 25., 100.];
     let mut buf = [0u8; 512];
-    let written = pack_f64_xor(inputs.into_iter().cloned(), &mut buf).unwrap();
+    let written = pack_f64_xor(inputs.iter().cloned(), &mut buf).unwrap();
     println!("Packed {} f64 inputs (XOR) into {} bytes", inputs.len(), written);
 
     let mut out = Vec::<f64>::with_capacity(64);

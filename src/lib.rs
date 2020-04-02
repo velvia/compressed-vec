@@ -2,6 +2,7 @@
 extern crate memoffset;
 
 pub mod nibblepacking;
+mod nibblepack_simd;
 pub mod byteutils;
 pub mod vector;
 pub mod histogram;
