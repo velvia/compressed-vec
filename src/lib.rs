@@ -8,6 +8,7 @@ pub mod vector;
 pub mod histogram;
 pub mod section;
 pub mod error;
+pub mod filter;
 
 #[no_mangle]
 pub extern "C" fn double_input(input: i32) -> i32 {

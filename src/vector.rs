@@ -1,3 +1,28 @@
+/// vector module contains `BinaryVector`, which allows creation of compressed binary vectors which can be
+/// appended to and read, queried, filtered, etc. quickly.
+///
+/// ## Appending values and reading them back
+///
+/// Appending values is easy.  Appenders dynamically size the input buffer.
+/// ```
+/// # use compressed_vec::vector::*;
+///     let mut appender = FixedSectU32Appender::new(1024).unwrap();
+///     appender.append(1).unwrap();
+///     appender.append(2).unwrap();
+///     appender.append_nulls(3).unwrap();
+///
+///     let reader = appender.reader();
+///     assert_eq!(reader.num_elements(), 5);
+///
+///     // Continue appending!
+///     appender.append(10).unwrap();
+/// ```
+///
+/// ## Finishing vectors
+///
+/// Calling `finish()` clones the vector bytes to the smallest representation possible, after which the
+/// appender is reset for creation of another new vector.  The finished vector is then immutable and the
+/// caller can read it.
 use std::marker::PhantomData;
 use std::mem;
 
@@ -5,6 +30,7 @@ use num::{Zero, Unsigned};
 use scroll::{ctx, Endian, Pread, Pwrite, LE};
 
 use crate::error::CodingError;
+use crate::filter::{EqualsU32, SectionFilter, VectorFilter, count_hits};
 use crate::section::*;
 
 /// BinaryVector: a compressed vector storing data of the same type
@@ -168,7 +194,7 @@ where T: Zero + Unsigned + Clone,
         self.header.reset();
         self.offset = NUM_HEADER_BYTES_TOTAL;
         self.write_buf.clear();
-        self.vect_buf.clear();
+        self.vect_buf.resize(self.vect_buf.capacity(), 0);  // Make sure entire vec is usable
         self.write_header()
     }
 
@@ -274,6 +300,7 @@ where T: Zero + Unsigned + Clone,
         self.vect_buf.resize(self.offset, 0);
         let mut returned_vec = Vec::with_capacity(self.offset);
         returned_vec.append(&mut self.vect_buf);
+        self.reset();
         Ok(returned_vec)
     }
 
@@ -287,7 +314,7 @@ where T: Zero + Unsigned + Clone,
 }
 
 /// Regular U64 appender with just plain NibblePacked encoding
-type FixedSectU64Appender = FixedSectIntAppender<u64, NibblePackU64MedFixedSect>;
+pub type FixedSectU64Appender = FixedSectIntAppender<u64, NibblePackU64MedFixedSect>;
 
 impl FixedSectU64Appender {
     pub fn new(initial_capacity: usize) -> Result<FixedSectU64Appender, CodingError> {
@@ -296,7 +323,18 @@ impl FixedSectU64Appender {
     }
 }
 
+/// Regular U32 appender with just plain NibblePacked encoding
+pub type FixedSectU32Appender = FixedSectIntAppender<u32, NibblePackU32MedFixedSect>;
+
+impl FixedSectU32Appender {
+    pub fn new(initial_capacity: usize) -> Result<FixedSectU32Appender, CodingError> {
+        FixedSectU32Appender::try_new(VectorType::FixedSection256, VectorSubType::Primitive,
+                                      initial_capacity)
+    }
+}
+
 /// A reader for reading sections and elements from a `FixedSectIntAppender` written vector.
+/// Can be reused many times; it has no mutable state and creates new iterators every time.
 // TODO: have a reader trait of some kind?
 pub struct FixedSectIntReader<'a> {
     vect_bytes: &'a [u8],
@@ -327,6 +365,11 @@ impl<'a> FixedSectIntReader<'a> {
     /// Returns the number of null sections
     pub fn num_null_sections(&self) -> usize {
         self.sect_iter().filter(|(sect, _)| sect.is_null()).count()
+    }
+
+    /// Returns a VectorFilter that iterates over 256-bit masks filtered from vector elements
+    pub fn filter_iter<F: SectionFilter>(&self, f: F) -> VectorFilter<'a, F> {
+        VectorFilter::new(&self.vect_bytes[NUM_HEADER_BYTES_TOTAL..], f)
     }
 }
 
@@ -446,4 +489,42 @@ fn test_append_u64_mixed_nulls_grow() {
 
     let elems: Vec<u64> = fixed_iter_u64(&reader).collect();
     assert_eq!(elems, all_data);
+}
+
+#[test]
+fn test_append_u32_and_filter() {
+    // First test appending with no nulls.  Just 1,2,3,4 and filter for 3, should get 1/4 of appended elements
+    let vector_size = 400;
+    let mut appender = FixedSectU32Appender::new(1024).unwrap();
+    for i in 0..vector_size {
+        appender.append((i % 4) + 1).unwrap();
+    }
+    let finished_vec = appender.finish(vector_size as usize).unwrap();
+
+    let reader = FixedSectIntReader::try_new(&finished_vec[..]).unwrap();
+    assert_eq!(reader.num_elements(), vector_size as usize);
+    assert_eq!(reader.sect_iter().count(), 2);
+
+    let filter_iter = reader.filter_iter(EqualsU32::new(3));
+    let count = count_hits(filter_iter);
+    assert_eq!(count, vector_size / 4);
+
+    // Test appending with stretches of nulls.  300, then 400 nulls, then 300 elements again
+    let nonnulls = 300;
+    let total_elems = nonnulls * 2 + 400;
+    for i in 0..nonnulls {
+        appender.append((i % 4) + 1).unwrap();
+    }
+    appender.append_nulls(400).unwrap();
+    for i in 0..nonnulls {
+        appender.append((i % 4) + 1).unwrap();
+    }
+    let finished_vec = appender.finish(total_elems as usize).unwrap();
+
+    let reader = FixedSectIntReader::try_new(&finished_vec[..]).unwrap();
+    assert_eq!(reader.num_elements(), total_elems as usize);
+
+    let filter_iter = reader.filter_iter(EqualsU32::new(3));
+    let count = count_hits(filter_iter);
+    assert_eq!(count, nonnulls * 2 / 4);
 }

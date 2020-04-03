@@ -236,6 +236,8 @@ impl FixedSectEnum {
     }
 }
 
+pub const NULL_SECT_U32: [u32; 256] = [0u32; 256];
+
 /// A NullFixedSect are 256 "Null" or 0 elements.
 /// For dictionary encoding they represent missing or Null values.
 /// Its binary representation consists solely of a SectionType::Null byte.

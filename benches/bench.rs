@@ -3,7 +3,7 @@ extern crate criterion;
 extern crate compressed_vec;
 
 use criterion::{Criterion, Benchmark, Throughput};
-use compressed_vec::{histogram, nibblepacking, nibblepack_simd, section};
+use compressed_vec::*;
 
 fn nibblepack8_varlen(c: &mut Criterion) {
     // This method from Criterion allows us to run benchmarks and vary some variable.
@@ -23,19 +23,6 @@ fn nibblepack8_varlen(c: &mut Criterion) {
     }, &[0, 2, 4, 6, 8]);
 }
 
-
-fn nibblepack8_varnumbits(c: &mut Criterion) {
-    c.bench_function_over_inputs("nibblepack8 varying # bits", |b, &&numbits| {
-        let mut inputbuf = [0u64; 8];
-        let mut buf = [0u8; 1024];
-        for i in 0..4 {
-            inputbuf[i] = (1u64 << numbits) - 1 - (i as u64);
-        }
-        b.iter(|| {
-            nibblepacking::nibble_pack8(&inputbuf, &mut buf, 0).unwrap();
-        })
-    }, &[8, 12, 16, 20, 24, 32]);
-}
 
 fn make_nonzeroes_u64x64(num_nonzeroes: usize) -> [u64; 64] {
     let mut inputs = [0u64; 64];
@@ -106,6 +93,84 @@ fn section32_decode_dense_lowcard_varnonzeroes(c: &mut Criterion) {
     }, &[0.05, 0.25, 0.5, 0.9, 1.0]);
 }
 
+const VECTOR_LENGTH: usize = 10000;
+
+fn dense_lowcard_vector() -> Vec<u8> {
+    let inputs = sinewave_varnonzeros_u32(1.0, VECTOR_LENGTH);
+    let mut appender = vector::FixedSectU32Appender::new(8192).unwrap();
+    inputs.iter().for_each(|a| appender.append(*a).unwrap());
+    appender.finish(VECTOR_LENGTH).unwrap()
+}
+
+fn sparse_lowcard_vector(num_nonzeroes: usize) -> Vec<u8> {
+    let nonzeroes = sinewave_varnonzeros_u32(1.0, num_nonzeroes/2);
+    let nulls = VECTOR_LENGTH as u16 - num_nonzeroes as u16;
+
+    let mut appender = vector::FixedSectU32Appender::new(8192).unwrap();
+    appender.append_nulls(nulls/4).unwrap();
+    nonzeroes.iter().for_each(|a| appender.append(*a).unwrap());
+    appender.append_nulls(nulls/2).unwrap();
+    nonzeroes.iter().for_each(|a| appender.append(*a).unwrap());
+    appender.finish(VECTOR_LENGTH).unwrap()
+}
+
+fn filter_dense_lowcard_u32vect(c: &mut Criterion) {
+    c.bench("decode and filter", Benchmark::new("lowcard u32", |b| {
+        let finished = dense_lowcard_vector();
+
+        b.iter(|| {
+            let reader = vector::FixedSectIntReader::try_new(&finished[..]).unwrap();
+            let filter_iter = reader.filter_iter(filter::EqualsU32::new(3));
+            filter::count_hits(filter_iter);
+        })
+    }).throughput(Throughput::Elements(VECTOR_LENGTH as u32)));
+}
+
+fn filter_sparse_lowcard_u32vect(c: &mut Criterion) {
+    c.bench("decode and filter", Benchmark::new("very sparse lowcard u32", |b| {
+        let finished = sparse_lowcard_vector(100);
+
+        b.iter(|| {
+            let reader = vector::FixedSectIntReader::try_new(&finished[..]).unwrap();
+            let filter_iter = reader.filter_iter(filter::EqualsU32::new(15));
+            filter::count_hits(filter_iter);
+        })
+    }).throughput(Throughput::Elements(VECTOR_LENGTH as u32)));
+}
+
+// TODO: move to Criterion v0.3
+fn filter_2vect_dense_sparse(c: &mut Criterion) {
+    c.bench("decode and filter", Benchmark::new("dense + sparse lowcard combo", |b| {
+        let dense_vect = dense_lowcard_vector();
+        let sparse_vect = sparse_lowcard_vector(100);
+        let dense_reader = vector::FixedSectIntReader::try_new(&dense_vect[..]).unwrap();
+        let sparse_reader = vector::FixedSectIntReader::try_new(&sparse_vect[..]).unwrap();
+
+        b.iter(|| {
+            let dense_iter = dense_reader.filter_iter(filter::EqualsU32::new(3));
+            let sparse_iter = sparse_reader.filter_iter(filter::EqualsU32::new(15));
+            let filter_iter = filter::MultiVectorFilter::new(vec![dense_iter, sparse_iter]);
+            filter::count_hits(filter_iter);
+        })
+    }).throughput(Throughput::Elements(VECTOR_LENGTH as u32)));
+}
+
+fn filter_2vect_sparse_dense(c: &mut Criterion) {
+    c.bench("decode and filter", Benchmark::new("sparse + dense lowcard combo", |b| {
+        let dense_vect = dense_lowcard_vector();
+        let sparse_vect = sparse_lowcard_vector(100);
+        let dense_reader = vector::FixedSectIntReader::try_new(&dense_vect[..]).unwrap();
+        let sparse_reader = vector::FixedSectIntReader::try_new(&sparse_vect[..]).unwrap();
+
+        b.iter(|| {
+            let dense_iter = dense_reader.filter_iter(filter::EqualsU32::new(3));
+            let sparse_iter = sparse_reader.filter_iter(filter::EqualsU32::new(15));
+            let filter_iter = filter::MultiVectorFilter::new(vec![sparse_iter, dense_iter]);
+            filter::count_hits(filter_iter);
+        })
+    }).throughput(Throughput::Elements(VECTOR_LENGTH as u32)));
+}
+
 const BATCH_SIZE: usize = 100;
 
 fn repack_2d_deltas(c: &mut Criterion) {
@@ -140,10 +205,13 @@ fn repack_2d_deltas(c: &mut Criterion) {
 }
 
 criterion_group!(benches, //nibblepack8_varlen,
-                          // nibblepack8_varnumbits,
                           pack_delta_u64s_varlen,
                           unpack_delta_u64s,
                           section32_decode_dense_lowcard_varnonzeroes,
+                          filter_dense_lowcard_u32vect,
+                          filter_sparse_lowcard_u32vect,
+                          filter_2vect_dense_sparse,
+                          filter_2vect_sparse_dense,
                           // repack_2d_deltas,
                           );
 criterion_main!(benches);

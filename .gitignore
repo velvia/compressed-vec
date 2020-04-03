@@ -3,3 +3,4 @@
 /out.stacks
 /*.svg
 /Cargo.lock
+.DS_Store
