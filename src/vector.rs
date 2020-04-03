@@ -10,9 +10,10 @@
 ///     appender.append(1).unwrap();
 ///     appender.append(2).unwrap();
 ///     appender.append_nulls(3).unwrap();
+///     assert_eq!(appender.num_elements(), 5);
 ///
 ///     let reader = appender.reader();
-///     assert_eq!(reader.num_elements(), 5);
+///     // Do something
 ///
 ///     // Continue appending!
 ///     appender.append(10).unwrap();
@@ -103,6 +104,7 @@ impl ctx::TryIntoCtx<Endian> for &VectorSubType {
 }
 
 const NUM_HEADER_BYTES_TOTAL: usize = 16;
+const BINARYVECT_HEADER_SIZE: usize = std::mem::size_of::<BinaryVector>();
 
 impl BinaryVector {
     pub fn new(major_type: VectorType, minor_type: VectorSubType) -> Self {
@@ -144,6 +146,21 @@ impl BinaryVector {
     }
 }
 
+#[derive(Debug, Copy, Clone, Pread, Pwrite)]
+pub struct FixedSectStats {
+    num_null_sections: u16,
+}
+
+impl FixedSectStats {
+    pub fn new() -> Self {
+        Self { num_null_sections: 0 }
+    }
+
+    pub fn reset(&mut self) {
+        self.num_null_sections = 0;
+    }
+}
+
 const GROW_BYTES: usize = 4096;
 
 /// A builder for a BinaryVector holding encoded/compressed u64/u32 values
@@ -161,6 +178,7 @@ where T: Zero + Unsigned + Clone,
     offset: usize,
     header: BinaryVector,
     write_buf: Vec<T>,
+    stats: FixedSectStats,
     sect_writer: PhantomData<W>     // Uses no space, this tells rustc we need W
 }
 
@@ -178,6 +196,7 @@ where T: Zero + Unsigned + Clone,
             offset: NUM_HEADER_BYTES_TOTAL,
             header: BinaryVector::new(major_type, minor_type),
             write_buf: Vec::with_capacity(FIXED_LEN),
+            stats: FixedSectStats::new(),
             sect_writer: PhantomData
         };
         new_self.write_header()?;
@@ -195,6 +214,7 @@ where T: Zero + Unsigned + Clone,
         self.offset = NUM_HEADER_BYTES_TOTAL;
         self.write_buf.clear();
         self.vect_buf.resize(self.vect_buf.capacity(), 0);  // Make sure entire vec is usable
+        self.stats.reset();
         self.write_header()
     }
 
@@ -257,6 +277,7 @@ where T: Zero + Unsigned + Clone,
             // If empty, and we have at least FIXED_LEN nulls to go, insert a null section.
             } else if left >= (FIXED_LEN as u16) {
                 self.offset = self.retry_grow(|s| NullFixedSect::write(s.vect_buf.as_mut_slice(), s.offset))?;
+                self.stats.num_null_sections += 1;
                 self.header.update_length(self.vect_buf.as_mut_slice(),
                                           (self.offset - NUM_HEADER_BYTES_TOTAL) as u32,
                                           self.header.num_elements + FIXED_LEN as u16)?;
@@ -296,11 +317,12 @@ where T: Zero + Unsigned + Clone,
 
         // Re-write the number of elements to reflect total_num_rows
         self.header.update_num_elems(self.vect_buf.as_mut_slice(), total_num_rows as u16)?;
+        self.vect_buf.as_mut_slice().pwrite_with(&self.stats, BINARYVECT_HEADER_SIZE, LE)?;
 
         self.vect_buf.resize(self.offset, 0);
         let mut returned_vec = Vec::with_capacity(self.offset);
         returned_vec.append(&mut self.vect_buf);
-        self.reset();
+        self.reset()?;
         Ok(returned_vec)
     }
 
@@ -357,6 +379,10 @@ impl<'a> FixedSectIntReader<'a> {
         self.vect_bytes.pread_with::<u16>(6, LE).unwrap() as usize
     }
 
+    pub fn get_stats(&self) -> FixedSectStats {
+        self.vect_bytes.pread_with(BINARYVECT_HEADER_SIZE, LE).unwrap()
+    }
+
     /// Returns an iterator over sections and each section's bytes
     pub fn sect_iter(&self) -> FixedSectIterator<'a> {
         FixedSectIterator::new(&self.vect_bytes[NUM_HEADER_BYTES_TOTAL..])
@@ -394,6 +420,9 @@ pub fn fixed_iter_u64<'a>(reader: &FixedSectIntReader<'a>) -> impl Iterator<Item
 
 #[test]
 fn test_append_u64_nonulls() {
+    // Make sure the fixed sect stats above can still fit in total headers
+    assert!(std::mem::size_of::<FixedSectStats>() + BINARYVECT_HEADER_SIZE <= NUM_HEADER_BYTES_TOTAL);
+
     // Append more than 256 values, see if we get two sections and the right data back
     let num_values: usize = 500;
     let data: Vec<u64> = (0..num_values as u64).collect();
@@ -455,6 +484,8 @@ fn test_append_u64_mixed_nulls() {
     assert_eq!(reader.num_elements(), total_elems);
     assert_eq!(reader.sect_iter().count(), 3);
     assert_eq!(reader.num_null_sections(), 1);
+
+    assert_eq!(reader.get_stats().num_null_sections, 1);
 
     let elems: Vec<u64> = fixed_iter_u64(&reader).collect();
     assert_eq!(elems, all_data);
