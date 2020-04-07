@@ -241,7 +241,7 @@ where T: Zero + Unsigned + Clone,
         where F: FnMut(&mut Self) -> Result<U, CodingError> {
         func(self).or_else(|err| {
             match err {
-                CodingError::NotEnoughSpace => {
+                CodingError::NotEnoughSpace | CodingError::BadOffset(_) => {
                     // Expand vect_buf
                     self.vect_buf.reserve(GROW_BYTES);
                     self.vect_buf.resize(self.vect_buf.capacity(), 0);
