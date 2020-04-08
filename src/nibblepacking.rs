@@ -114,7 +114,8 @@ pub fn nibble_pack8(inputs: &[u64; 8],
             nonzero_mask |= 1 << i;
         }
     }
-    if off >= out_buffer.len() {
+    // Check for both nonzero byte and at least one more byte after that for nibbles
+    if (off + 1) >= out_buffer.len() {
         return Err(CodingError::NotEnoughSpace);
     }
     out_buffer[off] = nonzero_mask;
