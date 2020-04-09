@@ -174,6 +174,11 @@ impl<'a, SF: SectionFilter> Iterator for MultiVectorFilter<'a, SF> {
     }
 }
 
+pub type EmptyFilter = std::iter::Empty<u32x8>;
+
+pub const EMPTY_FILTER: EmptyFilter = std::iter::empty::<u32x8>();
+
+
 /// Counts the output of VectorFilter iterator (or multiple VectorFilter results ANDed together)
 /// for all the 1's in the output and returns the total
 /// SIMD count_ones() is used for fast counting
