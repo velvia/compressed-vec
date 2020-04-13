@@ -30,15 +30,15 @@ jobs:
             rustup run nightly rustc --version --verbose
             rustup run nightly cargo --version --verbose
             rustup run nightly cargo build --release
-      - run:
-          name: Stable Build
-          command: |
-            rustc --version --verbose
-            cargo --version --verbose
-            cargo build --release
+      # - run:
+      #     name: Stable Build
+      #     command: |
+      #       rustc --version --verbose
+      #       cargo --version --verbose
+      #       cargo build --release
       - run:
           name: Test
-          command: cargo test
+          command: rustup run nightly cargo test
       - save_cache:
           key: project-cache
           paths:
