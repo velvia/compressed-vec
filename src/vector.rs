@@ -53,7 +53,7 @@ pub struct BinaryVector {
     num_bytes: u32,         // Number of bytes in vector following this length
     major_type: VectorType, // These should probably be enums no?
     minor_type: VectorSubType,
-    num_elements: u16,
+    _padding: u16,
 }
 
 #[repr(u8)]
@@ -108,7 +108,7 @@ const BINARYVECT_HEADER_SIZE: usize = std::mem::size_of::<BinaryVector>();
 
 impl BinaryVector {
     pub fn new(major_type: VectorType, minor_type: VectorSubType) -> Self {
-        Self { num_bytes: NUM_HEADER_BYTES_TOTAL as u32 - 4, major_type, minor_type, num_elements: 0 }
+        Self { num_bytes: NUM_HEADER_BYTES_TOTAL as u32 - 4, major_type, minor_type, _padding: 0 }
     }
 
     /// Returns the length of the BinaryVector including the length bytes
@@ -118,7 +118,6 @@ impl BinaryVector {
 
     pub fn reset(&mut self) {
         self.num_bytes = NUM_HEADER_BYTES_TOTAL as u32 - 4;
-        self.num_elements = 0;
     }
 
     /// Writes the entire BinaryVector header into the beginning of the given buffer
@@ -127,37 +126,40 @@ impl BinaryVector {
         Ok(())
     }
 
-    pub fn update_num_elems(&mut self, buf: &mut [u8], num_elements: u16) -> Result<(), CodingError> {
-        self.num_elements = num_elements;
-        buf.pwrite_with(self.num_elements, 6, LE)?;
-        Ok(())
-    }
-
-    /// Updates both the number of bytes in the vector and the number of elements at once.
+    /// Updates the number of bytes in the vector.
     /// The num_body_bytes should be the number of bytes AFTER the 16-byte BinaryVector header.
     /// The buffer slice should point to the beginning of the header ie the length bytes
-    pub fn update_length(&mut self,
-                         buf: &mut [u8],
-                         num_body_bytes: u32,
-                         num_elements: u16) -> Result<(), CodingError> {
+    pub fn update_num_bytes(&mut self,
+                            buf: &mut [u8],
+                            num_body_bytes: u32) -> Result<(), CodingError> {
         self.num_bytes = num_body_bytes + (NUM_HEADER_BYTES_TOTAL - 4) as u32;
         buf.pwrite_with(self.num_bytes, 0, LE)?;
-        self.update_num_elems(buf, num_elements)
+        Ok(())
     }
 }
 
 #[derive(Debug, Copy, Clone, Pread, Pwrite)]
 pub struct FixedSectStats {
+    num_elements: u32,
     num_null_sections: u16,
 }
 
 impl FixedSectStats {
     pub fn new() -> Self {
-        Self { num_null_sections: 0 }
+        Self { num_elements: 0, num_null_sections: 0 }
     }
 
     pub fn reset(&mut self) {
+        self.num_elements = 0;
         self.num_null_sections = 0;
+    }
+
+    /// Updates the number of elements only.  Writes entire stats at once.
+    /// Assumes buf points to beginning of _vector_ not this struct.
+    pub fn update_num_elems(&mut self, buf: &mut [u8], num_elements: u32) -> Result<(), CodingError> {
+        self.num_elements = num_elements;
+        buf.pwrite_with(*self, BINARYVECT_HEADER_SIZE, LE)?;
+        Ok(())
     }
 }
 
@@ -205,7 +207,7 @@ where T: Zero + Unsigned + Clone,
 
     /// Total number of elements including encoded sections and write buffer
     pub fn num_elements(&self) -> usize {
-        self.header.num_elements as usize + self.write_buf.len()
+        self.stats.num_elements as usize + self.write_buf.len()
     }
 
     /// Resets the internal state for appending a new vector.
@@ -215,6 +217,7 @@ where T: Zero + Unsigned + Clone,
         self.write_buf.clear();
         self.vect_buf.resize(self.vect_buf.capacity(), 0);  // Make sure entire vec is usable
         self.stats.reset();
+        self.stats.update_num_elems(&mut self.vect_buf, 0)?;
         self.write_header()
     }
 
@@ -230,9 +233,9 @@ where T: Zero + Unsigned + Clone,
                                                    s.offset,
                                                    &s.write_buf[..]))?;
         self.write_buf.clear();
-        self.header.update_length(self.vect_buf.as_mut_slice(),
-                                  (self.offset - NUM_HEADER_BYTES_TOTAL) as u32,
-                                  self.header.num_elements + FIXED_LEN as u16)
+        self.stats.update_num_elems(&mut self.vect_buf, self.stats.num_elements + FIXED_LEN as u32)?;
+        self.header.update_num_bytes(self.vect_buf.as_mut_slice(),
+                                     (self.offset - NUM_HEADER_BYTES_TOTAL) as u32)
     }
 
     /// Retries a func which might return Result<..., CodingError> by growing the vect_buf.
@@ -278,9 +281,9 @@ where T: Zero + Unsigned + Clone,
             } else if left >= FIXED_LEN {
                 self.offset = self.retry_grow(|s| NullFixedSect::write(s.vect_buf.as_mut_slice(), s.offset))?;
                 self.stats.num_null_sections += 1;
-                self.header.update_length(self.vect_buf.as_mut_slice(),
-                                          (self.offset - NUM_HEADER_BYTES_TOTAL) as u32,
-                                          self.header.num_elements + FIXED_LEN as u16)?;
+                self.stats.update_num_elems(&mut self.vect_buf, self.stats.num_elements + FIXED_LEN as u32)?;
+                self.header.update_num_bytes(self.vect_buf.as_mut_slice(),
+                                             (self.offset - NUM_HEADER_BYTES_TOTAL) as u32)?;
                 left -= FIXED_LEN;
             // If empty, and less than fixed_len nulls, insert nulls into write_buf
             } else {
@@ -299,10 +302,10 @@ where T: Zero + Unsigned + Clone,
     /// an entire section is written.
     /// NOTE: TooFewRows is returned if total_num_rows is below the total number of elements written so far.
     pub fn finish(&mut self, total_num_rows: usize) -> Result<Vec<u8>, CodingError> {
-        let total_so_far = self.header.num_elements as usize + self.write_buf.len();
+        let total_so_far = self.stats.num_elements as usize + self.write_buf.len();
         if total_so_far > total_num_rows { return Err(CodingError::InvalidNumRows(total_num_rows, total_so_far)); }
-        if total_num_rows > u16::max_value() as usize {
-            return Err(CodingError::InvalidNumRows(total_num_rows, u16::max_value() as usize));
+        if total_num_rows > u32::max_value() as usize {
+            return Err(CodingError::InvalidNumRows(total_num_rows, u32::max_value() as usize));
         }
 
         // Round out the section if needed
@@ -311,12 +314,12 @@ where T: Zero + Unsigned + Clone,
             self.append_nulls(number_to_fill)?;
         }
 
-        while self.header.num_elements < total_num_rows as u16 {
+        while self.stats.num_elements < total_num_rows as u32 {
             self.append_nulls(256)?;
         }
 
         // Re-write the number of elements to reflect total_num_rows
-        self.header.update_num_elems(self.vect_buf.as_mut_slice(), total_num_rows as u16)?;
+        self.stats.update_num_elems(self.vect_buf.as_mut_slice(), total_num_rows as u32)?;
         self.vect_buf.as_mut_slice().pwrite_with(&self.stats, BINARYVECT_HEADER_SIZE, LE)?;
 
         self.vect_buf.resize(self.offset, 0);
@@ -376,7 +379,7 @@ impl<'a> FixedSectIntReader<'a> {
 
     pub fn num_elements(&self) -> usize {
         // Should not fail since we have verified in try_new() that we have all header bytes
-        self.vect_bytes.pread_with::<u16>(6, LE).unwrap() as usize
+        self.get_stats().num_elements as usize
     }
 
     pub fn get_stats(&self) -> FixedSectStats {
@@ -558,4 +561,20 @@ fn test_append_u32_and_filter() {
     let filter_iter = reader.filter_iter(EqualsU32::new(3));
     let count = count_hits(filter_iter);
     assert_eq!(count, nonnulls * 2 / 4);
+}
+
+#[test]
+fn test_append_u32_large_vector() {
+    // 9999 nulls, then an item, 10 times = 100k items total
+    let mut appender = FixedSectU32Appender::new(4096).unwrap();
+    let vector_size = 100000;
+    for _ in 0..10 {
+        appender.append_nulls(9999).unwrap();
+        appender.append(2).unwrap();
+    }
+    assert_eq!(appender.num_elements(), vector_size);
+
+    let finished_vec = appender.finish(vector_size).unwrap();
+    let reader = FixedSectIntReader::try_new(&finished_vec[..]).unwrap();
+    assert_eq!(reader.num_elements(), vector_size as usize);
 }
