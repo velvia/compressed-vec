@@ -265,23 +265,23 @@ where T: Zero + Unsigned + Clone,
 
     /// Appends a number of nulls at once to the vector.  Super useful and fast for sparse data.
     /// Nulls are equivalent to zero value for type T.
-    pub fn append_nulls(&mut self, num_nulls: u16) -> Result<(), CodingError> {
+    pub fn append_nulls(&mut self, num_nulls: usize) -> Result<(), CodingError> {
         let mut left = num_nulls;
         while left > 0 {
             // If current write_buf is not empty, fill it up with zeroes and flush (maybe)
             if self.write_buf.len() > 0 {
-                let num_to_fill = left.min((FIXED_LEN - self.write_buf.len()) as u16);
+                let num_to_fill = left.min(FIXED_LEN - self.write_buf.len());
                 self.write_buf.resize(self.write_buf.len() + num_to_fill as usize, T::zero());
                 left -= num_to_fill;
                 if self.write_buf.len() >= FIXED_LEN { self.encode_section()?; }
             // If empty, and we have at least FIXED_LEN nulls to go, insert a null section.
-            } else if left >= (FIXED_LEN as u16) {
+            } else if left >= FIXED_LEN {
                 self.offset = self.retry_grow(|s| NullFixedSect::write(s.vect_buf.as_mut_slice(), s.offset))?;
                 self.stats.num_null_sections += 1;
                 self.header.update_length(self.vect_buf.as_mut_slice(),
                                           (self.offset - NUM_HEADER_BYTES_TOTAL) as u32,
                                           self.header.num_elements + FIXED_LEN as u16)?;
-                left -= FIXED_LEN as u16;
+                left -= FIXED_LEN;
             // If empty, and less than fixed_len nulls, insert nulls into write_buf
             } else {
                 self.write_buf.resize(left as usize, T::zero());
@@ -308,7 +308,7 @@ where T: Zero + Unsigned + Clone,
         // Round out the section if needed
         if self.write_buf.len() > 0 {
             let number_to_fill = FIXED_LEN - self.write_buf.len();
-            self.append_nulls(number_to_fill as u16)?;
+            self.append_nulls(number_to_fill)?;
         }
 
         while self.header.num_elements < total_num_rows as u16 {
@@ -475,7 +475,7 @@ fn test_append_u64_mixed_nulls() {
 
     let mut appender = FixedSectU64Appender::new(1024).unwrap();
     data1.iter().for_each(|&e| appender.append(e).unwrap());
-    appender.append_nulls(num_nulls as u16).unwrap();
+    appender.append_nulls(num_nulls).unwrap();
     data2.iter().for_each(|&e| appender.append(e).unwrap());
 
     let finished_vec = appender.finish(total_elems).unwrap();
@@ -507,9 +507,9 @@ fn test_append_u64_mixed_nulls_grow() {
 
     let mut appender = FixedSectU64Appender::new(300).unwrap();
     data1.iter().for_each(|&e| appender.append(e).unwrap());
-    appender.append_nulls(num_nulls as u16).unwrap();
+    appender.append_nulls(num_nulls).unwrap();
     data1.iter().for_each(|&e| appender.append(e).unwrap());
-    appender.append_nulls(num_nulls as u16).unwrap();
+    appender.append_nulls(num_nulls).unwrap();
 
     let finished_vec = appender.finish(total_elems).unwrap();
 
