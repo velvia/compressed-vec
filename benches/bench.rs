@@ -53,6 +53,18 @@ fn sinewave_varnonzeros_u32(fract_nonzeroes: f32, len: usize) -> Vec<u32> {
             }).collect()
 }
 
+// About 50% nonzeroes, but vary number of bits
+fn sinewave_varnumbits_u32(max_numbits: u8, len: usize) -> Vec<u32> {
+    let amp = 2usize.pow(max_numbits as u32) - 1;
+    // Sinusoid between -1 and 1 with period of ~20
+    (0..len).map(|i| ((i as f32) * std::f32::consts::PI / 10.0).sin())
+    // If value is negative, turn it into a zero
+            .map(|i| {
+                let new_value = i * amp as f32;
+                if new_value >= 0.0 { new_value as u32 } else { 0 }
+            }).collect()
+}
+
 // Pack 64 u64's, variable number of them are 0
 fn pack_delta_u64s_varlen(c: &mut Criterion) {
     c.bench_function_over_inputs("pack delta u64s varying nonzero numbers", |b, &&nonzeroes| {
@@ -97,6 +109,23 @@ fn section32_decode_dense_lowcard_varnonzeroes(c: &mut Criterion) {
     }
 }
 
+fn section32_decode_dense_varnumbits(c: &mut Criterion) {
+    let mut group = c.benchmark_group("section u32 decode numbits");
+    group.throughput(Throughput::Elements(256));
+
+    for numbits in [4, 8, 12, 16, 20].iter() {
+        let inputs = sinewave_varnumbits_u32(*numbits, 256);
+        let mut buf = [0u8; 1024];
+        section::NibblePackU32MedFixedSect::write(&mut buf, 0, &inputs[..]).unwrap();
+
+        group.bench_with_input(BenchmarkId::new("dense low card, numbits: ", *numbits), &buf,
+                               |b, buf| b.iter(|| {
+            let mut sink = nibblepack_simd::U32_256Sink::new();
+            section::NibblePackU32MedFixedSect::decode_to_sink(buf, &mut sink).unwrap();
+        }));
+    }
+}
+
 const VECTOR_LENGTH: usize = 10000;
 
 fn dense_lowcard_vector() -> Vec<u8> {
@@ -108,7 +137,7 @@ fn dense_lowcard_vector() -> Vec<u8> {
 
 fn sparse_lowcard_vector(num_nonzeroes: usize) -> Vec<u8> {
     let nonzeroes = sinewave_varnonzeros_u32(1.0, num_nonzeroes/2);
-    let nulls = VECTOR_LENGTH as u16 - num_nonzeroes as u16;
+    let nulls = VECTOR_LENGTH - num_nonzeroes;
 
     let mut appender = vector::FixedSectU32Appender::new(8192).unwrap();
     appender.append_nulls(nulls/4).unwrap();
@@ -188,6 +217,7 @@ criterion_group!(benches, //nibblepack8_varlen,
                           pack_delta_u64s_varlen,
                           unpack_delta_u64s,
                           section32_decode_dense_lowcard_varnonzeroes,
+                          section32_decode_dense_varnumbits,
                           bench_filter_vect,
                           // repack_2d_deltas,
                           );
