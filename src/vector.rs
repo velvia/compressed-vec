@@ -339,20 +339,20 @@ where T: Zero + Unsigned + Clone,
 }
 
 /// Regular U64 appender with just plain NibblePacked encoding
-pub type FixedSectU64Appender = FixedSectIntAppender<u64, NibblePackU64MedFixedSect>;
+pub type FixedSectU64Appender<'buf> = FixedSectIntAppender<u64, NibblePackU64MedFixedSect<'buf>>;
 
-impl FixedSectU64Appender {
-    pub fn new(initial_capacity: usize) -> Result<FixedSectU64Appender, CodingError> {
+impl<'buf> FixedSectU64Appender<'buf> {
+    pub fn new(initial_capacity: usize) -> Result<FixedSectU64Appender<'buf>, CodingError> {
         FixedSectU64Appender::try_new(VectorType::FixedSection256, VectorSubType::Primitive,
                                       initial_capacity)
     }
 }
 
 /// Regular U32 appender with just plain NibblePacked encoding
-pub type FixedSectU32Appender = FixedSectIntAppender<u32, NibblePackU32MedFixedSect>;
+pub type FixedSectU32Appender<'buf> = FixedSectIntAppender<u32, NibblePackU32MedFixedSect<'buf>>;
 
-impl FixedSectU32Appender {
-    pub fn new(initial_capacity: usize) -> Result<FixedSectU32Appender, CodingError> {
+impl<'buf> FixedSectU32Appender<'buf> {
+    pub fn new(initial_capacity: usize) -> Result<FixedSectU32Appender<'buf>, CodingError> {
         FixedSectU32Appender::try_new(VectorType::FixedSection256, VectorSubType::Primitive,
                                       initial_capacity)
     }
@@ -393,7 +393,7 @@ impl<'a> FixedSectIntReader<'a> {
 
     /// Returns the number of null sections
     pub fn num_null_sections(&self) -> usize {
-        self.sect_iter().filter(|(sect, _)| sect.is_null()).count()
+        self.sect_iter().filter(|sect| sect.is_null()).count()
     }
 
     /// Returns a VectorFilter that iterates over 256-bit masks filtered from vector elements
@@ -409,10 +409,10 @@ impl<'a> FixedSectIntReader<'a> {
 ///  2. Create iterator of [u64; 8]; then flatmap it.  The iterator can be converted to u64.
 ///  3. Maybe use a regional or arena allocator.
 pub fn fixed_iter_u64<'a>(reader: &FixedSectIntReader<'a>) -> impl Iterator<Item = u64> + 'a {
-    reader.sect_iter().flat_map(|(sect, s_bytes)| {
+    reader.sect_iter().flat_map(|sect| {
         let iter: Box<dyn Iterator<Item = u64>> = match sect {
             FixedSectEnum::NibblePackU64MedFixedSect(mut inner_sect) =>
-                Box::new(inner_sect.iter(s_bytes)),
+                Box::new(inner_sect.iter()),
             FixedSectEnum::NullFixedSect(_) =>
                 Box::new((0..FIXED_LEN).map(|_s| 0u64)),
             _ => panic!("No other section types supported"),

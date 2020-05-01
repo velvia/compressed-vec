@@ -76,7 +76,7 @@ impl SinkU32 for EqualsU32Sink {
 /// according to each filter type.
 pub trait SectionFilter {
     // Filters each section, producing a mask of hits for each row in a 256-row section
-    fn filter_sect(&mut self, sect: FixedSectEnum, sect_bytes: &[u8]) -> Result<u32x8, CodingError>;
+    fn filter_sect(&mut self, sect: FixedSectEnum) -> Result<u32x8, CodingError>;
 }
 
 const ALL_MATCHES: u32x8 = u32x8::splat(0xffff_ffff);  // All 1's
@@ -84,13 +84,13 @@ const NO_MATCHES: u32x8 = u32x8::splat(0);
 
 impl SectionFilter for EqualsU32 {
     #[inline]
-    fn filter_sect(&mut self, sect: FixedSectEnum, sect_bytes: &[u8]) -> Result<u32x8, CodingError> {
+    fn filter_sect(&mut self, sect: FixedSectEnum) -> Result<u32x8, CodingError> {
         match sect {
             FixedSectEnum::NullFixedSect(_) =>
                 if self.pred == 0 { Ok(ALL_MATCHES) } else { Ok(NO_MATCHES) },
-            FixedSectEnum::NibblePackU32MedFixedSect(_) => {
+            FixedSectEnum::NibblePackU32MedFixedSect(sect) => {
                 self.sink.reset();
-                NibblePackU32MedFixedSect::decode_to_sink(sect_bytes, &mut self.sink)?;
+                sect.decode_to_sink(&mut self.sink)?;
                 Ok(self.sink.get_mask())
             },
             _ => panic!("Cannot use this filter on that section type, must be wrong vector"),
@@ -123,7 +123,7 @@ impl<'a, SF: SectionFilter> Iterator for VectorFilter<'a, SF> {
     #[inline]
     fn next(&mut self) -> Option<u32x8> {
         self.sect_iter.next()
-            .and_then(|(sect, s_bytes)| self.sf.filter_sect(sect, s_bytes).ok())
+            .and_then(|sect| self.sf.filter_sect(sect).ok())
     }
 }
 

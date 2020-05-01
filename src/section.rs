@@ -200,21 +200,24 @@ pub trait FixedSection {
     /// The number of bytes total in this section including the section type header byte
     fn num_bytes(&self) -> usize;
     fn num_elements(&self) -> usize { FIXED_LEN }
+
+    /// Return the byte slice corresponding to section bytes, if available
+    fn sect_bytes(&self) -> Option<&[u8]>;
 }
 
 #[enum_dispatch(FixedSection)]
 #[derive(Debug, PartialEq)]
-pub enum FixedSectEnum {
+pub enum FixedSectEnum<'buf> {
     NullFixedSect,
-    NibblePackU64MedFixedSect,
-    NibblePackU32MedFixedSect,
+    NibblePackU64MedFixedSect(NibblePackU64MedFixedSect<'buf>),
+    NibblePackU32MedFixedSect(NibblePackU32MedFixedSect<'buf>),
 }
 
-impl TryFrom<&[u8]> for FixedSectEnum {
+impl<'buf> TryFrom<&'buf [u8]> for FixedSectEnum<'buf> {
     type Error = CodingError;
     /// Tries to extract a FixedSection from a slice, whose first byte contains the section type byte.
     /// The length of the slice should contain at least all the data in the section.
-    fn try_from(s: &[u8]) -> Result<FixedSectEnum, CodingError> {
+    fn try_from(s: &'buf [u8]) -> Result<FixedSectEnum<'buf>, CodingError> {
         if s.len() <= 0 { return Err(CodingError::InputTooShort) }
         let sect_type = SectionType::try_from(s[0])?;
         match sect_type {
@@ -227,7 +230,7 @@ impl TryFrom<&[u8]> for FixedSectEnum {
     }
 }
 
-impl FixedSectEnum {
+impl<'buf> FixedSectEnum<'buf> {
     pub fn is_null(&self) -> bool {
         match self {
             FixedSectEnum::NullFixedSect(..) => true,
@@ -255,6 +258,7 @@ impl NullFixedSect {
 
 impl FixedSection for NullFixedSect {
     fn num_bytes(&self) -> usize { 1 }
+    fn sect_bytes(&self) -> Option<&[u8]> { None }
 }
 
 /// A trait for FixedSection writers of a particular type
@@ -271,11 +275,13 @@ pub trait FixedSectionWriter<T: Sized> {
 ///  +1   2-byte LE size of NibblePack-encoded bytes to follow
 ///  +3   NibblePack-encoded 256 u64 elements
 #[derive(Debug, PartialEq, Copy, Clone)]
-pub struct NibblePackU64MedFixedSect {
-    encoded_bytes: u16,
+pub struct NibblePackU64MedFixedSect<'buf> {
+    sect_bytes: &'buf [u8],
+    encoded_bytes: u16,   // This is a separate field as sect_bytes might extend beyond end of section
+                          // for performance reasons.  It is faster to be able to read beyond end
 }
 
-impl NibblePackU64MedFixedSect {
+impl<'buf> NibblePackU64MedFixedSect<'buf> {
     /// Tries to create a new NibblePackU64MedFixedSect from a byte slice starting from the first
     /// section type byte of the section.  Byte slice should be as large as the length bytes indicate.
     pub fn try_from(sect_bytes: &[u8]) -> Result<NibblePackU64MedFixedSect, CodingError> {
@@ -284,15 +290,15 @@ impl NibblePackU64MedFixedSect {
                                     if (n + 3) <= sect_bytes.len() as u16 { Ok(n) }
                                     else { Err(scroll::Error::Custom("Slice not large enough".to_string())) }
                                 })?;
-        Ok(NibblePackU64MedFixedSect { encoded_bytes })
+        Ok(NibblePackU64MedFixedSect { sect_bytes, encoded_bytes })
     }
 
-    pub fn iter<'a>(&mut self, sect_bytes: &'a [u8]) -> nibblepacking::IterU64Sink<'a> {
-        nibblepacking::IterU64Sink::new(&sect_bytes[3..], FIXED_LEN)
+    pub fn iter(&mut self) -> nibblepacking::IterU64Sink<'buf> {
+        nibblepacking::IterU64Sink::new(&self.sect_bytes[3..], FIXED_LEN)
     }
 }
 
-impl FixedSectionWriter<u64> for NibblePackU64MedFixedSect {
+impl<'buf> FixedSectionWriter<u64> for NibblePackU64MedFixedSect<'buf> {
     /// Writes out a fixed NibblePacked medium section, including correct length bytes,
     /// performing NibblePacking in the meantime.  Note: length value will be written last.
     /// Only after the write succeeds should vector metadata such as length/num bytes be updated.
@@ -315,42 +321,46 @@ impl FixedSectionWriter<u64> for NibblePackU64MedFixedSect {
     }
 }
 
-impl FixedSection for NibblePackU64MedFixedSect {
+impl<'buf> FixedSection for NibblePackU64MedFixedSect<'buf> {
     fn num_bytes(&self) -> usize { self.encoded_bytes as usize + 3 }
+    fn sect_bytes(&self) -> Option<&[u8]> { Some(self.sect_bytes) }
 }
 
-// TODO: reorganize this into one common struct, with diff methods and readers for typed iteration
 #[derive(Debug, PartialEq, Copy, Clone)]
-pub struct NibblePackU32MedFixedSect {
-    encoded_bytes: u16,
+pub struct NibblePackU32MedFixedSect<'buf> {
+    sect_bytes: &'buf [u8],   // All of the ssction bytes including 3-byte header
+    encoded_bytes: u16,   // This is a separate field as sect_bytes might extend beyond end of section
+                          // for performance reasons.  It is faster to be able to read beyond end
 }
 
-impl NibblePackU32MedFixedSect {
+impl<'buf> NibblePackU32MedFixedSect<'buf> {
     /// Tries to create a new NibblePackU32MedFixedSect from a byte slice starting from the first
     /// section type byte of the section.  Byte slice should be as large as the length bytes indicate.
-    pub fn try_from(sect_bytes: &[u8]) -> Result<NibblePackU32MedFixedSect, CodingError> {
+    pub fn try_from(sect_bytes: &'buf [u8]) -> Result<NibblePackU32MedFixedSect<'buf>, CodingError> {
         let encoded_bytes = sect_bytes.pread_with(1, LE)
                                 .and_then(|n| {
                                     if (n + 3) <= sect_bytes.len() as u16 { Ok(n) }
                                     else { Err(scroll::Error::Custom("Slice not large enough".to_string())) }
                                 })?;
-        Ok(NibblePackU32MedFixedSect { encoded_bytes })
+        Ok(NibblePackU32MedFixedSect { sect_bytes, encoded_bytes })
     }
 
     /// Decodes values from this section to a sink.  For example, to get an iterator out:
     /// ```
     /// # use compressed_vec::section::NibblePackU32MedFixedSect;
     /// # use compressed_vec::nibblepack_simd;
-    /// # let sect_bytes = [0u8; 256];
+    /// # let mut sect_bytes = [0u8; 256];
+    /// # sect_bytes[1] = 253;
+    /// # let sect = NibblePackU32MedFixedSect::try_from(&sect_bytes[..]).unwrap();
     ///     let mut sink = nibblepack_simd::U32_256Sink::new();
-    ///     NibblePackU32MedFixedSect::decode_to_sink(&sect_bytes, &mut sink).unwrap();
+    ///     sect.decode_to_sink(&mut sink).unwrap();
     ///     println!("{:?}", sink.values.iter().count());
     /// ```
     pub fn decode_to_sink<'a, Output: nibblepack_simd::SinkU32>(
-        sect_bytes: &'a [u8],
+        &self,
         output: &mut Output) -> Result<(), CodingError> {
         let mut values_left = FIXED_LEN;
-        let mut inbuf = &sect_bytes[3..];
+        let mut inbuf = &self.sect_bytes[3..];
         while values_left > 0 {
             inbuf = nibblepack_simd::unpack8_u32_simd(inbuf, output)?;
             values_left -= 8;
@@ -359,7 +369,7 @@ impl NibblePackU32MedFixedSect {
     }
 }
 
-impl FixedSectionWriter<u32> for NibblePackU32MedFixedSect {
+impl<'buf> FixedSectionWriter<u32> for NibblePackU32MedFixedSect<'buf> {
     /// Writes out a fixed NibblePacked medium section, including correct length bytes,
     /// performing NibblePacking in the meantime.  Note: length value will be written last.
     /// Only after the write succeeds should vector metadata such as length/num bytes be updated.
@@ -380,8 +390,9 @@ impl FixedSectionWriter<u32> for NibblePackU32MedFixedSect {
     }
 }
 
-impl FixedSection for NibblePackU32MedFixedSect {
+impl<'buf> FixedSection for NibblePackU32MedFixedSect<'buf> {
     fn num_bytes(&self) -> usize { self.encoded_bytes as usize + 3 }
+    fn sect_bytes(&self) -> Option<&[u8]> { Some(self.sect_bytes) }
 }
 
 /// Iterates over a series of encoded FixedSections, basically the data of any Vector encoded as Fixed256
@@ -389,22 +400,21 @@ pub struct FixedSectIterator<'a> {
     encoded_bytes: &'a [u8]
 }
 
-impl<'a> FixedSectIterator<'a> {
-    pub fn new(encoded_bytes: &'a [u8]) -> Self {
+impl<'buf> FixedSectIterator<'buf> {
+    pub fn new(encoded_bytes: &'buf [u8]) -> Self {
         FixedSectIterator { encoded_bytes }
     }
 }
 
 /// FixedSectIterator iterates over (FixedSectEnum, section byte slice) - the section byte slice contains
 /// all the bytes from the section including the starting type byte.
-impl<'a> Iterator for FixedSectIterator<'a> {
-    type Item = (FixedSectEnum, &'a [u8]);
+impl<'buf> Iterator for FixedSectIterator<'buf> {
+    type Item = FixedSectEnum<'buf>;
     fn next(&mut self) -> Option<Self::Item> {
         match FixedSectEnum::try_from(self.encoded_bytes) {
             Ok(fse) => {
-                let orig_slice = self.encoded_bytes;
                 self.encoded_bytes = &self.encoded_bytes[fse.num_bytes()..];
-                Some((fse, orig_slice))
+                Some(fse)
             },
             Err(_) => None
         }
@@ -414,7 +424,7 @@ impl<'a> Iterator for FixedSectIterator<'a> {
 // This is partly for perf disassembly and partly for convenience
 pub fn unpack_u32_section(buf: &[u8]) -> [u32; 256] {
     let mut sink = nibblepack_simd::U32_256Sink::new();
-    NibblePackU32MedFixedSect::decode_to_sink(buf, &mut sink).unwrap();
+    NibblePackU32MedFixedSect::try_from(buf).unwrap().decode_to_sink(&mut sink).unwrap();
     sink.values
 }
 
@@ -481,20 +491,20 @@ fn test_fixedsectiterator_write_and_read() {
 
     // Now, create an iterator and collect enums.  Send only the slice of written data, no more.
     let sect_iter = FixedSectIterator::new(&buf[0..off]);
-    let sections = sect_iter.collect::<Vec<(FixedSectEnum, &[u8])>>();
+    let sections = sect_iter.collect::<Vec<FixedSectEnum>>();
 
     assert_eq!(sections.len(), 2);
-    let (sect, _sect_bytes) = &sections[0];
+    let sect = &sections[0];
     assert_eq!(sect.num_bytes(), 1);
     match sect {
         FixedSectEnum::NullFixedSect(..) => {},
         _ => panic!("Got the wrong sect: {:?}", sect),
     }
 
-    let (sect, sect_bytes) = &sections[1];
-    assert!(sect.num_bytes() <= sect_bytes.len());
+    let sect = &sections[1];
+    assert!(sect.num_bytes() <= sect.sect_bytes().unwrap().len());
     if let FixedSectEnum::NibblePackU64MedFixedSect(mut inner_sect) = sect {
-        let unpacked_data: Vec<u64> = inner_sect.iter(sect_bytes).collect();
+        let unpacked_data: Vec<u64> = inner_sect.iter().collect();
         assert_eq!(unpacked_data, data);
     } else {
         panic!("Wrong type obtained at sections[1]")
