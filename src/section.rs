@@ -16,6 +16,7 @@ use std::convert::TryFrom;
 
 use arrayref::array_ref;
 use enum_dispatch::enum_dispatch;
+use packed_simd::u32x8;
 use scroll::{ctx, Endian, Pread, Pwrite, LE};
 
 
@@ -239,6 +240,26 @@ impl<'buf> FixedSectEnum<'buf> {
     }
 }
 
+/// Reader trait for FixedSections, has some common methods for iteration and extraction of values
+pub trait FixedSectReader<SinkType>: FixedSection
+where SinkType: nibblepacking::SinkInput {
+    /// Decodes values from this section to a sink.
+    /// This is the most generic method of processing data from a section.
+    /// For example, to get an iterator out:
+    /// ```
+    /// # use compressed_vec::section::{FixedSectReader, NibblePackU32MedFixedSect};
+    /// # use compressed_vec::nibblepack_simd;
+    /// # let mut sect_bytes = [0u8; 256];
+    /// # sect_bytes[1] = 253;
+    ///     let sect = NibblePackU32MedFixedSect::try_from(&sect_bytes[..]).unwrap();
+    ///     let mut sink = nibblepack_simd::U32_256Sink::new();
+    ///     sect.decode_to_sink(&mut sink).unwrap();
+    ///     println!("{:?}", sink.values.iter().count());
+    /// ```
+    fn decode_to_sink<Output>(&self, output: &mut Output) -> Result<(), CodingError>
+        where Output: nibblepacking::Sink<SinkType>;
+}
+
 pub const NULL_SECT_U32: [u32; 256] = [0u32; 256];
 
 /// A NullFixedSect are 256 "Null" or 0 elements.
@@ -298,6 +319,19 @@ impl<'buf> NibblePackU64MedFixedSect<'buf> {
     }
 }
 
+impl<'buf> FixedSectReader<[u64; 8]> for NibblePackU64MedFixedSect<'buf> {
+    fn decode_to_sink<Output>(&self, output: &mut Output) -> Result<(), CodingError>
+        where Output: nibblepacking::Sink<[u64; 8]> {
+        let mut values_left = FIXED_LEN;
+        let mut inbuf = &self.sect_bytes[3..];
+        while values_left > 0 {
+            inbuf = nibblepacking::nibble_unpack8(inbuf, output)?;
+            values_left -= 8;
+        }
+        Ok(())
+    }
+}
+
 impl<'buf> FixedSectionWriter<u64> for NibblePackU64MedFixedSect<'buf> {
     /// Writes out a fixed NibblePacked medium section, including correct length bytes,
     /// performing NibblePacking in the meantime.  Note: length value will be written last.
@@ -344,21 +378,11 @@ impl<'buf> NibblePackU32MedFixedSect<'buf> {
                                 })?;
         Ok(NibblePackU32MedFixedSect { sect_bytes, encoded_bytes })
     }
+}
 
-    /// Decodes values from this section to a sink.  For example, to get an iterator out:
-    /// ```
-    /// # use compressed_vec::section::NibblePackU32MedFixedSect;
-    /// # use compressed_vec::nibblepack_simd;
-    /// # let mut sect_bytes = [0u8; 256];
-    /// # sect_bytes[1] = 253;
-    /// # let sect = NibblePackU32MedFixedSect::try_from(&sect_bytes[..]).unwrap();
-    ///     let mut sink = nibblepack_simd::U32_256Sink::new();
-    ///     sect.decode_to_sink(&mut sink).unwrap();
-    ///     println!("{:?}", sink.values.iter().count());
-    /// ```
-    pub fn decode_to_sink<'a, Output: nibblepack_simd::SinkU32>(
-        &self,
-        output: &mut Output) -> Result<(), CodingError> {
+impl<'buf> FixedSectReader<u32x8> for NibblePackU32MedFixedSect<'buf> {
+    fn decode_to_sink<Output>(&self, output: &mut Output) -> Result<(), CodingError>
+        where Output: nibblepacking::Sink<u32x8> {
         let mut values_left = FIXED_LEN;
         let mut inbuf = &self.sect_bytes[3..];
         while values_left > 0 {

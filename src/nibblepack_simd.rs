@@ -405,13 +405,7 @@ const U32_SIMD_READMASKS: [m32x8; 9] = [
     m32x8::new(true, true, true, true, true, true, true, true),
 ];
 
-/// u32 SIMD sink
-pub trait SinkU32 {
-    /// Called when all zeroes or 8 null outputs
-    fn process_zeroes(&mut self);
-    /// Called for normal output
-    fn process(&mut self, unpacked: u32x8);
-}
+impl SinkInput for u32x8 {}
 
 // #[repr(simd)]  // SIMD 32x8 alignment
 // struct U32Values([u32; 256]);
@@ -432,7 +426,7 @@ impl U32_256Sink {
     }
 }
 
-impl SinkU32 for U32_256Sink {
+impl Sink<u32x8> for U32_256Sink {
     #[inline]
     fn process(&mut self, unpacked: u32x8) {
         if self.i < self.values.len() {
@@ -447,6 +441,10 @@ impl SinkU32 for U32_256Sink {
     fn process_zeroes(&mut self) {
         // NOP. just advance the pointer.  The values were already initialized to 0.
         self.i += 8;
+    }
+
+    fn reset(&mut self) {
+        self.i = 0;  // No need to zero things out, as we expect above methods to fill up whole buffer?
     }
 }
 
@@ -547,7 +545,7 @@ pub const MAX_U32_NIBBLEPACKED_LEN: usize = 34;
 /// Checks that the input buffer has enough room to decode.
 /// Really fast for 1-2 nibbles, but still fast for 3-8 nibbles.
 #[inline]
-pub fn unpack8_u32_simd<'a, Output: SinkU32>(
+pub fn unpack8_u32_simd<'a, Output: Sink<u32x8>>(
     inbuf: &'a [u8],
     output: &mut Output,
 ) -> Result<&'a [u8], CodingError> {

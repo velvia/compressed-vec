@@ -2,6 +2,7 @@ use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::time::Instant;
 use compressed_vec::{histogram, nibblepacking};
+use compressed_vec::nibblepacking::Sink;
 
 ///
 /// 2d_delta_bench <<CSV histogram file>>

@@ -229,11 +229,22 @@ fn pack_universal(
     Ok(off)
 }
 
-///
-/// A trait for processing data during unpacking.  Used to combine with predictors to create final output.
-pub trait Sink {
+pub trait SinkInput {}
+
+impl SinkInput for [u64; 8] {}
+
+/// A sink processes data during unpacking.  The type, Input, is supposed to represent 8 integers of fixed width,
+/// since NibblePack works on 8 ints at a time.
+pub trait Sink<Input: SinkInput> {
     /// Processes 8 items. Sink responsible for space allocation and safety.
-    fn process(&mut self, data: &[u64; 8]);
+    fn process(&mut self, data: Input);
+
+    /// Called when all zeroes or 8 null outputs
+    fn process_zeroes(&mut self);
+
+    /// Resets state in the sink; exact meaning depends on the sink itself.  Many sinks operate on more than
+    /// 8 items; for example 256 items or entire sections.
+    fn reset(&mut self);
 }
 
 /// A super-simple Sink which just appends to a Vec<u64>
@@ -249,16 +260,20 @@ impl LongSink {
     pub fn new() -> LongSink {
         LongSink { vec: Vec::with_capacity(DEFAULT_CAPACITY) }
     }
-
-    pub fn clear(&mut self) {
-        self.vec.clear()
-    }
 }
 
-impl Sink for LongSink {
+impl Sink<[u64; 8]> for LongSink {
     #[inline]
-    fn process(&mut self, data: &[u64; 8]) {
-        self.vec.extend(data)
+    fn process(&mut self, data: [u64; 8]) {
+        self.vec.extend(&data)
+    }
+
+    fn process_zeroes(&mut self) {
+        self.vec.extend(&ZERO_ELEMS);
+    }
+
+    fn reset(&mut self) {
+        self.vec.clear()
     }
 }
 
@@ -282,10 +297,19 @@ impl<'a> IterU64Sink<'a> {
     }
 }
 
-impl<'a> Sink for IterU64Sink<'a> {
+impl<'a> Sink<[u64; 8]> for IterU64Sink<'a> {
     #[inline]
-    fn process(&mut self, data: &[u64; 8]) {
-        self.values = *data;
+    fn process(&mut self, data: [u64; 8]) {
+        self.values = data;
+    }
+
+    fn process_zeroes(&mut self) {
+        self.values = ZERO_ELEMS;
+    }
+
+    fn reset(&mut self) {
+        self.i = 8;
+        self.left = 0;
     }
 }
 
@@ -332,20 +356,14 @@ impl DeltaSink {
         DeltaSink::with_sink(LongSink::new())
     }
 
-    /// Resets the state of the sink so it can be re-used for another unpack
-    pub fn clear(&mut self) {
-        self.acc = 0;
-        self.sink.clear()
-    }
-
     pub fn output_vec(&self) -> &Vec<u64> {
         &self.sink.vec
     }
 }
 
-impl Sink for DeltaSink {
+impl Sink<[u64; 8]> for DeltaSink {
     #[inline]
-    fn process(&mut self, data: &[u64; 8]) {
+    fn process(&mut self, data: [u64; 8]) {
         let mut buf = [0u64; 8];
         let mut acc = self.acc;
         for i in 0..8 {
@@ -353,7 +371,16 @@ impl Sink for DeltaSink {
             buf[i] = acc;
         }
         self.acc = acc;
-        self.sink.process(&buf);
+        self.sink.process(buf);
+    }
+
+    fn process_zeroes(&mut self) {
+        todo!();
+    }
+
+    fn reset(&mut self) {
+        self.acc = 0;
+        self.sink.reset()
     }
 }
 
@@ -378,9 +405,9 @@ impl DoubleXorSink {
     }
 }
 
-impl Sink for DoubleXorSink {
+impl Sink<[u64; 8]> for DoubleXorSink {
     #[inline]
-    fn process(&mut self, data: &[u64; 8]) {
+    fn process(&mut self, data: [u64; 8]) {
         let mut buf = [0f64; 8];
         let mut last = self.last;
         for i in 0..8 {
@@ -393,6 +420,15 @@ impl Sink for DoubleXorSink {
 
         self.vec.extend(&buf);
     }
+
+    fn process_zeroes(&mut self) {
+        todo!();
+    }
+
+    fn reset(&mut self) {
+        self.vec.clear();
+    }
+
 }
 
 /// Unpacks num_values values from an encoded buffer, by calling nibble_unpack8 enough times.
@@ -404,11 +440,12 @@ impl Sink for DoubleXorSink {
 /// * `output` - a Trait which processes each resulting u64
 /// * `num_values` - the number of u64 values to decode
 #[inline]
-pub fn unpack<'a, Output: Sink>(
+pub fn unpack<'a, Output>(
     encoded: &'a [u8],
     output: &mut Output,
     num_values: usize,
-) -> Result<&'a [u8], CodingError> {
+) -> Result<&'a [u8], CodingError>
+where Output: Sink<[u64; 8]> {
     let mut values_left = num_values as isize;
     let mut inbuf = encoded;
     while values_left > 0 {
@@ -452,7 +489,7 @@ pub fn unpack_f64_xor<'a>(encoded: &'a [u8],
 //       annotations to help it determine to which input the output lifetime is related to, so Rust knows
 //       that the output of the slice will live as long as the reference to the input slice is valid.
 #[inline]
-fn nibble_unpack8<'a, Output: Sink>(
+pub fn nibble_unpack8<'a, Output: Sink<[u64; 8]>>(
     inbuf: &'a [u8],
     output: &mut Output,
 ) -> Result<&'a [u8], CodingError> {
@@ -460,7 +497,7 @@ fn nibble_unpack8<'a, Output: Sink>(
     let nonzero_mask = inbuf[0];
     if nonzero_mask == 0 {
         // All 8 words are 0; skip further processing
-        output.process(&ZERO_ELEMS);
+        output.process(ZERO_ELEMS);
         Ok(&inbuf[1..])
     } else {
         if inbuf.len() < 2 { return Err(CodingError::NotEnoughSpace) }
@@ -501,7 +538,7 @@ fn nibble_unpack8<'a, Output: Sink>(
                 bit_cursor = (bit_cursor + num_bits) % 64;
             }
         }
-        output.process(&out_array);
+        output.process(out_array);
 
         // Return the "remaining slice" - the rest of input buffer after we've parsed our bytes.
         // This allows for easy and clean chaining of nibble_unpack8 calls with no mutable state

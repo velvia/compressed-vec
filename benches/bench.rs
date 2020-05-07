@@ -4,7 +4,8 @@ extern crate compressed_vec;
 
 use criterion::{Criterion, Benchmark, BenchmarkId, Throughput};
 use compressed_vec::*;
-use compressed_vec::section::NibblePackU32MedFixedSect;
+use compressed_vec::nibblepacking::Sink;
+use compressed_vec::section::{FixedSectReader, NibblePackU32MedFixedSect};
 
 fn nibblepack8_varlen(c: &mut Criterion) {
     // This method from Criterion allows us to run benchmarks and vary some variable.
@@ -85,7 +86,7 @@ fn unpack_delta_u64s(c: &mut Criterion) {
 
         let mut sink = nibblepacking::DeltaSink::new();
         b.iter(|| {
-            sink.clear();
+            sink.reset();
             nibblepacking::unpack(&buf[..], &mut sink, inputs.len()).unwrap();
         })
     });

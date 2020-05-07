@@ -102,17 +102,6 @@ impl<'a> DeltaDiffPackSink<'a> {
         Self { last_hist_deltas, out_buf, ..Default::default() }
     }
 
-    // Resets everythin, even the out_buf.  Probably should be used only for testing
-    #[inline]
-    pub fn reset(&mut self) {
-        self.i = 0;
-        self.value_dropped = false;
-        for elem in self.last_hist_deltas.iter_mut() {
-            *elem = 0;
-        }
-        self.out_offset = 0;
-    }
-
     pub fn reset_out_buf(&mut self) {
         self.out_offset = 0;
     }
@@ -132,9 +121,9 @@ impl<'a> DeltaDiffPackSink<'a> {
     }
 }
 
-impl<'a> Sink for DeltaDiffPackSink<'a> {
+impl<'a> Sink<[u64; 8]> for DeltaDiffPackSink<'a> {
     #[inline]
-    fn process(&mut self, data: &[u64; 8]) {
+    fn process(&mut self, data: [u64; 8]) {
         let maxlen = self.last_hist_deltas.len();
         let looplen = if self.i + 8 <= maxlen { 8 } else { maxlen - self.i };
         for n in 0..looplen {
@@ -155,6 +144,21 @@ impl<'a> Sink for DeltaDiffPackSink<'a> {
         }
         self.out_offset = nibble_pack8(&self.pack_array, self.out_buf, self.out_offset).unwrap();
         self.i += 8;
+    }
+
+    fn process_zeroes(&mut self) {
+        todo!();
+    }
+
+    // Resets everythin, even the out_buf.  Probably should be used only for testing
+    #[inline]
+    fn reset(&mut self) {
+        self.i = 0;
+        self.value_dropped = false;
+        for elem in self.last_hist_deltas.iter_mut() {
+            *elem = 0;
+        }
+        self.out_offset = 0;
     }
 }
 

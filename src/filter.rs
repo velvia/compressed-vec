@@ -8,7 +8,7 @@ use packed_simd::u32x8;
 
 use crate::error::CodingError;
 use crate::section::*;
-use crate::nibblepack_simd::SinkU32;
+use crate::nibblepacking::Sink;
 
 /// Filters on value exactly equal
 pub struct EqualsU32 {
@@ -52,13 +52,9 @@ impl EqualsU32Sink {
         };
         u32x8::from(u32array)
     }
-
-    pub fn reset(&mut self) {
-        self.i = 0;
-    }
 }
 
-impl SinkU32 for EqualsU32Sink {
+impl Sink<u32x8> for EqualsU32Sink {
     #[inline]
     fn process_zeroes(&mut self) {
         self.mask[self.i] = if self.pred_is_zero { 0xff } else { 0 };
@@ -69,6 +65,10 @@ impl SinkU32 for EqualsU32Sink {
     fn process(&mut self, unpacked: u32x8) {
         self.mask[self.i] = unpacked.eq(self.predicate).bitmask();
         self.i += 1;
+    }
+
+    fn reset(&mut self) {
+        self.i = 0;
     }
 }
 
