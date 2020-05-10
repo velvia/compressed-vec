@@ -1,5 +1,6 @@
 use plain::Plain;
 use crate::nibblepacking::*;
+use crate::sink::Sink;
 
 #[derive(Copy, Clone, Debug)]
 #[repr(u8)]

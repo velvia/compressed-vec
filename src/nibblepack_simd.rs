@@ -1,4 +1,5 @@
-#![allow(unused)] // needed for dbg!() macro, but folks say this should not be needed
+#![allow(unused)]    // needed for dbg!() macro, but folks say this should not be needed
+#![feature(slice_fill)]
 
 use core::ops::BitAnd;
 use std::ops::{Shl, Shr};
@@ -6,6 +7,7 @@ use std::ops::{Shl, Shr};
 use crate::byteutils::*;
 use crate::error::CodingError;
 use crate::nibblepacking::*;
+use crate::sink::*;
 
 use packed_simd::{shuffle, u64x4, u32x8, m32x8, isizex8, cptrx8};
 
@@ -404,49 +406,6 @@ const U32_SIMD_READMASKS: [m32x8; 9] = [
     m32x8::new(true, true, true, true, true, true, true, false),
     m32x8::new(true, true, true, true, true, true, true, true),
 ];
-
-impl SinkInput for u32x8 {}
-
-// #[repr(simd)]  // SIMD 32x8 alignment
-// struct U32Values([u32; 256]);
-
-/// A simple sink storing up to 256 u32 values in an array
-// NOTE: we want to do fast aligned SIMD writes, but looks like that might not happen.
-// See simd_aligned for a possible solution.  It is possible the alignment check might fail
-// due to values being a [u32];.
-#[repr(align(32))]  // SIMD 32x8 alignment?
-pub struct U32_256Sink {
-    pub values: [u32; 256],
-    i: usize,
-}
-
-impl U32_256Sink {
-    pub fn new() -> Self {
-        Self { values: [0u32; 256], i: 0 }
-    }
-}
-
-impl Sink<u32x8> for U32_256Sink {
-    #[inline]
-    fn process(&mut self, unpacked: u32x8) {
-        if self.i < self.values.len() {
-            // NOTE: use unaligned writes for now.  See simd_aligned for a possible solution.
-            // Pointer check align_offset is not enabled for now.
-            unpacked.write_to_slice_unaligned(&mut self.values[self.i..self.i+8]);
-            self.i += 8;
-        }
-    }
-
-    #[inline]
-    fn process_zeroes(&mut self) {
-        // NOP. just advance the pointer.  The values were already initialized to 0.
-        self.i += 8;
-    }
-
-    fn reset(&mut self) {
-        self.i = 0;  // No need to zero things out, as we expect above methods to fill up whole buffer?
-    }
-}
 
 // Used for when we aren't sure there's enough space to use preload_simd
 #[inline]

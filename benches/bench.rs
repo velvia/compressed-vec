@@ -4,7 +4,7 @@ extern crate compressed_vec;
 
 use criterion::{Criterion, Benchmark, BenchmarkId, Throughput};
 use compressed_vec::*;
-use compressed_vec::nibblepacking::Sink;
+use compressed_vec::sink::{Sink, U32_256Sink};
 use compressed_vec::section::{FixedSectReader, NibblePackU32MedFixedSect};
 
 fn nibblepack8_varlen(c: &mut Criterion) {
@@ -105,7 +105,7 @@ fn section32_decode_dense_lowcard_varnonzeroes(c: &mut Criterion) {
 
         group.bench_with_input(BenchmarkId::new("dense low card, nonzero%: ", *nonzero_f), &buf,
                                |b, buf| b.iter(|| {
-            let mut sink = nibblepack_simd::U32_256Sink::new();
+            let mut sink = U32_256Sink::new();
             NibblePackU32MedFixedSect::try_from(buf).unwrap().decode_to_sink(&mut sink).unwrap();
         }));
     }
@@ -122,7 +122,7 @@ fn section32_decode_dense_varnumbits(c: &mut Criterion) {
 
         group.bench_with_input(BenchmarkId::new("dense low card, numbits: ", *numbits), &buf,
                                |b, buf| b.iter(|| {
-            let mut sink = nibblepack_simd::U32_256Sink::new();
+            let mut sink = U32_256Sink::new();
             NibblePackU32MedFixedSect::try_from(buf).unwrap().decode_to_sink(&mut sink).unwrap();
         }));
     }
@@ -155,8 +155,8 @@ fn bench_filter_vect(c: &mut Criterion) {
 
     let dense_vect = dense_lowcard_vector();
     let sparse_vect = sparse_lowcard_vector(100);
-    let dense_reader = vector::FixedSectIntReader::try_new(&dense_vect[..]).unwrap();
-    let sparse_reader = vector::FixedSectIntReader::try_new(&sparse_vect[..]).unwrap();
+    let dense_reader = vector::FixedSectIntReader::<u32>::try_new(&dense_vect[..]).unwrap();
+    let sparse_reader = vector::FixedSectIntReader::<u32>::try_new(&sparse_vect[..]).unwrap();
 
     group.bench_function("lowcard u32", |b| b.iter(|| {
         let filter_iter = dense_reader.filter_iter(filter::EqualsU32::new(3));

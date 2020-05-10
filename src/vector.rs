@@ -27,12 +27,13 @@
 use std::marker::PhantomData;
 use std::mem;
 
-use num::{Zero, Unsigned};
+use num::Unsigned;
 use scroll::{ctx, Endian, Pread, Pwrite, LE};
 
 use crate::error::CodingError;
 use crate::filter::{EqualsU32, SectionFilter, VectorFilter, count_hits};
 use crate::section::*;
+use crate::sink::*;
 
 /// BinaryVector: a compressed vector storing data of the same type
 ///   enabling high speed operations on compressed data without
@@ -174,7 +175,7 @@ const GROW_BYTES: usize = 4096;
 /// So readers who read just the vector itself will not get the updates in write_buf.
 /// This appender must be consulted for querying write_buf values.
 pub struct FixedSectIntAppender<T, W>
-where T: Zero + Unsigned + Clone,
+where T: VectBase + Unsigned + Clone,
       W: FixedSectionWriter<T> {
     vect_buf: Vec<u8>,
     offset: usize,
@@ -185,7 +186,7 @@ where T: Zero + Unsigned + Clone,
 }
 
 impl<T, W> FixedSectIntAppender<T, W>
-where T: Zero + Unsigned + Clone,
+where T: VectBase + Unsigned + Clone,
       W: FixedSectionWriter<T> {
     /// Creates a new FixedSectIntAppender.  Usually you'll want to use one of the more concrete typed structs.
     /// Also initializes the vect_buf with a valid section header.  Initial capacity is the initial size of the
@@ -332,7 +333,7 @@ where T: Zero + Unsigned + Clone,
     /// Obtains a reader for reading from the bytes of this appender.
     /// NOTE: reader will only read what has been written so far, and due to Rust borrowing rules, one should
     /// not attempt to read and append at the same time; the returned reader is not safe across threads.
-    pub fn reader(&self) -> FixedSectIntReader {
+    pub fn reader(&self) -> FixedSectIntReader<T> {
         // This should never fail, as we have already proven we can initialize the vector
         FixedSectIntReader::try_new(&self.vect_buf[..self.offset]).expect("Getting reader from appender failed")
     }
@@ -358,22 +359,25 @@ impl<'buf> FixedSectU32Appender<'buf> {
     }
 }
 
+
 /// A reader for reading sections and elements from a `FixedSectIntAppender` written vector.
+/// Use the same base type - eg FixedSectU32Appender -> FixedSectIntReader::<u32>
 /// Can be reused many times; it has no mutable state and creates new iterators every time.
 // TODO: have a reader trait of some kind?
-pub struct FixedSectIntReader<'a> {
-    vect_bytes: &'a [u8],
+pub struct FixedSectIntReader<'buf, T: VectBase> {
+    vect_bytes: &'buf [u8],
+    _reader: PhantomData<T>,
 }
 
-impl<'a> FixedSectIntReader<'a> {
+impl<'buf, T: VectBase> FixedSectIntReader<'buf, T> {
     /// Creates a new reader out of the bytes for the vector.
     // TODO: verify that the vector is a fixed sect int.
-    pub fn try_new(vect_bytes: &'a [u8]) -> Result<Self, CodingError> {
+    pub fn try_new(vect_bytes: &'buf [u8]) -> Result<Self, CodingError> {
         let bytes_from_header: u32 = vect_bytes.pread_with(0, LE)?;
         if vect_bytes.len() < (bytes_from_header + 4) as usize {
             Err(CodingError::InputTooShort)
         } else {
-            Ok(Self { vect_bytes })
+            Ok(Self { vect_bytes, _reader: PhantomData })
         }
     }
 
@@ -387,7 +391,7 @@ impl<'a> FixedSectIntReader<'a> {
     }
 
     /// Returns an iterator over sections and each section's bytes
-    pub fn sect_iter(&self) -> FixedSectIterator<'a> {
+    pub fn sect_iter(&self) -> FixedSectIterator<'buf> {
         FixedSectIterator::new(&self.vect_bytes[NUM_HEADER_BYTES_TOTAL..])
     }
 
@@ -397,28 +401,64 @@ impl<'a> FixedSectIntReader<'a> {
     }
 
     /// Returns a VectorFilter that iterates over 256-bit masks filtered from vector elements
-    pub fn filter_iter<F: SectionFilter>(&self, f: F) -> VectorFilter<'a, F> {
+    pub fn filter_iter<F: SectionFilter>(&self, f: F) -> VectorFilter<'buf, F> {
         VectorFilter::new(&self.vect_bytes[NUM_HEADER_BYTES_TOTAL..], f)
+    }
+
+    /// Returns an iterator over all items in this vector.
+    pub fn iterate(&self) -> VectorItemIter<'buf, T> {
+        VectorItemIter::new(self.sect_iter(), self.num_elements())
     }
 }
 
-/// Returns iterator over all items in a vector. NOTE: not designed to be performant.
-/// Right now it boxes each section iterator since they are dynamic.
-/// TODO: if we really need a performant version of this, think of some other solutions:
-///  1. Create a struct which can switch on inner iterators
-///  2. Create iterator of [u64; 8]; then flatmap it.  The iterator can be converted to u64.
-///  3. Maybe use a regional or arena allocator.
-pub fn fixed_iter_u64<'a>(reader: &FixedSectIntReader<'a>) -> impl Iterator<Item = u64> + 'a {
-    reader.sect_iter().flat_map(|sect| {
-        let iter: Box<dyn Iterator<Item = u64>> = match sect {
-            FixedSectEnum::NibblePackU64MedFixedSect(mut inner_sect) =>
-                Box::new(inner_sect.iter()),
-            FixedSectEnum::NullFixedSect(_) =>
-                Box::new((0..FIXED_LEN).map(|_s| 0u64)),
-            _ => panic!("No other section types supported"),
+
+/// Iterator struct over all items in a vector, for convenience
+/// Panics on decoding error - there's no really good way for an iterator to return an error
+// NOTE: part of reason to do this is to better control lifetimes which is hard otherwise
+pub struct VectorItemIter<'buf, T: VectBase> {
+    sect_iter: FixedSectIterator<'buf>,
+    sink: Section256Sink<T>,
+    num_elems: usize,
+    i: usize,
+}
+
+impl<'buf, T: VectBase> VectorItemIter<'buf, T> {
+    pub fn new(sect_iter: FixedSectIterator<'buf>, num_elems: usize) -> Self {
+        let mut s = Self {
+            sect_iter,
+            sink: Section256Sink::<T>::new(),
+            num_elems,
+            i: 0,
         };
-        iter
-    }).take(reader.num_elements())
+        if num_elems > 0 {
+            s.next_section();
+        }
+        s
+    }
+
+    fn next_section(&mut self) {
+        self.sink.reset();
+        if let Some(next_sect) = self.sect_iter.next() {
+            next_sect.decode::<T, _>(&mut self.sink).expect("Unexpected end of section");
+        }
+    }
+}
+
+impl<'buf, T: VectBase> Iterator for VectorItemIter<'buf, T> {
+    type Item = T;
+    fn next(&mut self) -> Option<T> {
+        if self.i < self.num_elems {
+            let thing = self.sink.values[self.i % FIXED_LEN];
+            self.i += 1;
+            // If at boundary, get next_section
+            if self.i % FIXED_LEN == 0 && self.i < self.num_elems {
+                self.next_section();
+            }
+            Some(thing)
+        } else {
+            None
+        }
+    }
 }
 
 #[test]
@@ -454,7 +494,7 @@ fn test_append_u64_nonulls() {
     assert_eq!(reader.sect_iter().count(), 2);
     assert_eq!(reader.num_null_sections(), 0);
 
-    let elems: Vec<u64> = fixed_iter_u64(&reader).collect();
+    let elems: Vec<u64> = reader.iterate().collect();
     assert_eq!(elems, data);
 }
 
@@ -490,7 +530,7 @@ fn test_append_u64_mixed_nulls() {
 
     assert_eq!(reader.get_stats().num_null_sections, 1);
 
-    let elems: Vec<u64> = fixed_iter_u64(&reader).collect();
+    let elems: Vec<u64> = reader.iterate().collect();
     assert_eq!(elems, all_data);
 }
 
@@ -521,7 +561,7 @@ fn test_append_u64_mixed_nulls_grow() {
     assert_eq!(reader.sect_iter().count(), 6);
     assert_eq!(reader.num_null_sections(), 1);
 
-    let elems: Vec<u64> = fixed_iter_u64(&reader).collect();
+    let elems: Vec<u64> = reader.iterate().collect();
     assert_eq!(elems, all_data);
 }
 
@@ -535,7 +575,7 @@ fn test_append_u32_and_filter() {
     }
     let finished_vec = appender.finish(vector_size as usize).unwrap();
 
-    let reader = FixedSectIntReader::try_new(&finished_vec[..]).unwrap();
+    let reader = FixedSectIntReader::<u32>::try_new(&finished_vec[..]).unwrap();
     assert_eq!(reader.num_elements(), vector_size as usize);
     assert_eq!(reader.sect_iter().count(), 2);
 
@@ -555,7 +595,7 @@ fn test_append_u32_and_filter() {
     }
     let finished_vec = appender.finish(total_elems as usize).unwrap();
 
-    let reader = FixedSectIntReader::try_new(&finished_vec[..]).unwrap();
+    let reader = FixedSectIntReader::<u32>::try_new(&finished_vec[..]).unwrap();
     assert_eq!(reader.num_elements(), total_elems as usize);
 
     let filter_iter = reader.filter_iter(EqualsU32::new(3));
@@ -575,6 +615,6 @@ fn test_append_u32_large_vector() {
     assert_eq!(appender.num_elements(), vector_size);
 
     let finished_vec = appender.finish(vector_size).unwrap();
-    let reader = FixedSectIntReader::try_new(&finished_vec[..]).unwrap();
+    let reader = FixedSectIntReader::<u32>::try_new(&finished_vec[..]).unwrap();
     assert_eq!(reader.num_elements(), vector_size as usize);
 }

@@ -2,6 +2,7 @@
 
 use crate::error::CodingError;
 use crate::byteutils::*;
+use crate::sink::*;
 
 /// Packs a slice of u64 numbers that are increasing, using delta encoding.  That is, the delta between successive
 /// elements is encoded, rather than the absolute numbers.  The first number is encoded as is.
@@ -229,24 +230,6 @@ fn pack_universal(
     Ok(off)
 }
 
-pub trait SinkInput {}
-
-impl SinkInput for [u64; 8] {}
-
-/// A sink processes data during unpacking.  The type, Input, is supposed to represent 8 integers of fixed width,
-/// since NibblePack works on 8 ints at a time.
-pub trait Sink<Input: SinkInput> {
-    /// Processes 8 items. Sink responsible for space allocation and safety.
-    fn process(&mut self, data: Input);
-
-    /// Called when all zeroes or 8 null outputs
-    fn process_zeroes(&mut self);
-
-    /// Resets state in the sink; exact meaning depends on the sink itself.  Many sinks operate on more than
-    /// 8 items; for example 256 items or entire sections.
-    fn reset(&mut self);
-}
-
 /// A super-simple Sink which just appends to a Vec<u64>
 #[derive(Debug)]
 pub struct LongSink {
@@ -274,69 +257,6 @@ impl Sink<[u64; 8]> for LongSink {
 
     fn reset(&mut self) {
         self.vec.clear()
-    }
-}
-
-/// A Sink which is used to iterate over individual u64 unpacked values.
-/// Call `IterU64Sink::new()` with the NibblePacked buffer and number of values to unpack,
-/// and this sink will call unpack and also provide the Iterator API.
-/// NOTE: This is designed for convenience and not speed.  It makes sure only num_values
-/// are iterated over.
-#[derive(Debug)]
-pub struct IterU64Sink<'a> {
-    values: [u64; 8],
-    i: usize,
-    encoded_buf: &'a [u8],
-    left: usize,
-}
-
-impl<'a> IterU64Sink<'a> {
-    pub fn new(encoded_buf: &'a [u8], num_values: usize) -> Self {
-        // NOTE: initialize i to 8 so that it will start by calling unpack
-        Self { values: [0u64; 8], i: 8, encoded_buf, left: num_values }
-    }
-}
-
-impl<'a> Sink<[u64; 8]> for IterU64Sink<'a> {
-    #[inline]
-    fn process(&mut self, data: [u64; 8]) {
-        self.values = data;
-    }
-
-    fn process_zeroes(&mut self) {
-        self.values = ZERO_ELEMS;
-    }
-
-    fn reset(&mut self) {
-        self.i = 8;
-        self.left = 0;
-    }
-}
-
-impl<'a> Iterator for IterU64Sink<'a> {
-    type Item = u64;
-    fn next(&mut self) -> Option<u64> {
-        if self.i < 8 && self.left > 0 {
-            let next_value = self.values[self.i];
-            self.i += 1;
-            self.left -= 1;
-            Some(next_value)
-        } else {
-            // Do we have more values to unpack?  Let's do it!
-            // NOTE: if there is an unpacking error, then we just return None
-            if self.left > 0 {
-                match nibble_unpack8(self.encoded_buf, self) {
-                    Ok(remaining) => {
-                        self.encoded_buf = remaining;
-                        self.i = 0;
-                        self.next()
-                    },
-                    Err(_) => None
-                }
-            } else {
-                None
-            }
-        }
     }
 }
 
@@ -757,8 +677,9 @@ fn test_unpack_u64_plain_iter() {
     // NOTE: into_iter() of an array returns an Iterator<Item = &u64>, cloned() is needed to convert back to u64
     let written = pack_u64(inputs.iter().cloned(), &mut buf, 0).unwrap();
 
-    let iter = IterU64Sink::new(&buf[0..written], inputs.len());
-    assert_eq!(iter.collect::<Vec<u64>>(), inputs);
+    let mut sink = U64_256Sink::new();
+    unpack(&buf[0..written], &mut sink, inputs.len()).unwrap();
+    assert_eq!(sink.values[0..inputs.len()], inputs);
 }
 
 #[test]

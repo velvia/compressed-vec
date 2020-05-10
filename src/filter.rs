@@ -8,7 +8,7 @@ use packed_simd::u32x8;
 
 use crate::error::CodingError;
 use crate::section::*;
-use crate::nibblepacking::Sink;
+use crate::sink::Sink;
 
 /// Filters on value exactly equal
 pub struct EqualsU32 {
@@ -101,13 +101,13 @@ impl SectionFilter for EqualsU32 {
 
 /// Allows for filtering over each section of a vector.
 /// Yields an Iterator of u32x8 mask for each section in the vector.
-pub struct VectorFilter<'a, SF: SectionFilter> {
-    sect_iter: FixedSectIterator<'a>,
+pub struct VectorFilter<'buf, SF: SectionFilter> {
+    sect_iter: FixedSectIterator<'buf>,
     sf: SF,
 }
 
-impl<'a, SF: SectionFilter> VectorFilter<'a, SF> {
-    pub fn new(vector_bytes: &'a [u8], sf: SF) -> VectorFilter<'a, SF> {
+impl<'buf, SF: SectionFilter> VectorFilter<'buf, SF> {
+    pub fn new(vector_bytes: &'buf [u8], sf: SF) -> VectorFilter<'buf, SF> {
         Self { sect_iter: FixedSectIterator::new(vector_bytes), sf }
     }
 
@@ -118,7 +118,7 @@ impl<'a, SF: SectionFilter> VectorFilter<'a, SF> {
     }
 }
 
-impl<'a, SF: SectionFilter> Iterator for VectorFilter<'a, SF> {
+impl<'buf, SF: SectionFilter> Iterator for VectorFilter<'buf, SF> {
     type Item = u32x8;
     #[inline]
     fn next(&mut self) -> Option<u32x8> {
@@ -133,18 +133,18 @@ impl<'a, SF: SectionFilter> Iterator for VectorFilter<'a, SF> {
 /// It has one optimization: it short-circuits the ANDing as soon as the masking creates
 /// an all-zero mask.  Thus it makes sense to put the most sparse and least likely to hit
 /// vector first.
-pub struct MultiVectorFilter<'a , SF: SectionFilter> {
-    vect_filters: Vec<VectorFilter<'a, SF>>
+pub struct MultiVectorFilter<'buf , SF: SectionFilter> {
+    vect_filters: Vec<VectorFilter<'buf, SF>>
 }
 
-impl<'a, SF: SectionFilter> MultiVectorFilter<'a, SF> {
-    pub fn new(vect_filters: Vec<VectorFilter<'a, SF>>) -> Self {
+impl<'buf, SF: SectionFilter> MultiVectorFilter<'buf, SF> {
+    pub fn new(vect_filters: Vec<VectorFilter<'buf, SF>>) -> Self {
         if vect_filters.is_empty() { panic!("Cannot pass in empty filters to MultiVectorFilter"); }
         Self { vect_filters }
     }
 }
 
-impl<'a, SF: SectionFilter> Iterator for MultiVectorFilter<'a, SF> {
+impl<'buf, SF: SectionFilter> Iterator for MultiVectorFilter<'buf, SF> {
     type Item = u32x8;
     fn next(&mut self) -> Option<u32x8> {
         // Get first filter
