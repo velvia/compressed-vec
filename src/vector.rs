@@ -340,20 +340,22 @@ where T: VectBase + Unsigned + Clone,
 }
 
 /// Regular U64 appender with just plain NibblePacked encoding
-pub type FixedSectU64Appender<'buf> = FixedSectIntAppender<u64, NibblePackU64MedFixedSect<'buf>>;
+pub type FixedSectU64Appender = FixedSectIntAppender<u64, NibblePackU64MedFixedSect<'static>>;
 
-impl<'buf> FixedSectU64Appender<'buf> {
-    pub fn new(initial_capacity: usize) -> Result<FixedSectU64Appender<'buf>, CodingError> {
+impl FixedSectU64Appender {
+    pub fn new(initial_capacity: usize) -> Result<FixedSectU64Appender, CodingError> {
         FixedSectU64Appender::try_new(VectorType::FixedSection256, VectorSubType::Primitive,
                                       initial_capacity)
     }
 }
 
 /// Regular U32 appender with just plain NibblePacked encoding
-pub type FixedSectU32Appender<'buf> = FixedSectIntAppender<u32, NibblePackU32MedFixedSect<'buf>>;
+// NOTE: lifetime annotation of 'static is fine here as FixedSectionWriter has static methods only and do not
+// depend on structs
+pub type FixedSectU32Appender = FixedSectIntAppender<u32, NibblePackU32MedFixedSect<'static>>;
 
-impl<'buf> FixedSectU32Appender<'buf> {
-    pub fn new(initial_capacity: usize) -> Result<FixedSectU32Appender<'buf>, CodingError> {
+impl FixedSectU32Appender {
+    pub fn new(initial_capacity: usize) -> Result<FixedSectU32Appender, CodingError> {
         FixedSectU32Appender::try_new(VectorType::FixedSection256, VectorSubType::Primitive,
                                       initial_capacity)
     }

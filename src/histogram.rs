@@ -23,12 +23,14 @@ struct BinHistogramHeader {
 unsafe impl Plain for BinHistogramHeader {}
 
 impl BinHistogramHeader {
-    fn from_bytes(buf: &[u8]) -> &BinHistogramHeader {
+    #[allow(dead_code)]
+    pub fn from_bytes(buf: &[u8]) -> &BinHistogramHeader {
         plain::from_bytes(buf).expect("The buffer is either too short or not aligned!")
     }
 
     // Returns the byte slice for the compressed binary bucket values
-    fn values_byteslice<'a>(&self, buf: &'a [u8]) -> &'a [u8] {
+    #[allow(dead_code)]
+    pub fn values_byteslice<'a>(&self, buf: &'a [u8]) -> &'a [u8] {
         let values_index = offset_of!(BinHistogramHeader, num_buckets) + self.bucket_def_len as usize;
         &buf[values_index..]
     }
