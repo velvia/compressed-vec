@@ -230,50 +230,23 @@ fn pack_universal(
     Ok(off)
 }
 
-/// A super-simple Sink which just appends to a Vec<u64>
-#[derive(Debug)]
-pub struct LongSink {
-    pub vec: Vec<u64>,
-}
 
-const DEFAULT_CAPACITY: usize = 64;
 const ZERO_ELEMS: [u64; 8] = [0u64; 8];
-
-impl LongSink {
-    pub fn new() -> LongSink {
-        LongSink { vec: Vec::with_capacity(DEFAULT_CAPACITY) }
-    }
-}
-
-impl Sink<[u64; 8]> for LongSink {
-    #[inline]
-    fn process(&mut self, data: [u64; 8]) {
-        self.vec.extend(&data)
-    }
-
-    fn process_zeroes(&mut self) {
-        self.vec.extend(&ZERO_ELEMS);
-    }
-
-    fn reset(&mut self) {
-        self.vec.clear()
-    }
-}
 
 /// A Sink which accumulates delta-encoded NibblePacked data back into increasing u64 numbers
 #[derive(Debug)]
 pub struct DeltaSink {
     acc: u64,
-    sink: LongSink,
+    sink: VecSink<u64>,
 }
 
 impl DeltaSink {
-    pub fn with_sink(inner_sink: LongSink) -> DeltaSink {
+    pub fn with_sink(inner_sink: VecSink<u64>) -> DeltaSink {
         DeltaSink { acc: 0, sink: inner_sink }
     }
 
     pub fn new() -> DeltaSink {
-        DeltaSink::with_sink(LongSink::new())
+        DeltaSink::with_sink(VecSink::<u64>::new())
     }
 
     pub fn output_vec(&self) -> &Vec<u64> {
@@ -598,7 +571,7 @@ fn nibblepack8_64bit_numbers() {
 #[test]
 fn unpack8_all_zeroes() {
     let compressed_array = [0x00u8];
-    let mut sink = LongSink::new();
+    let mut sink = VecSink::<u64>::new();
     let res = nibble_unpack8(&compressed_array, &mut sink);
     assert_eq!(res.unwrap().is_empty(), true);
     assert_eq!(sink.vec.len(), 8);
@@ -614,7 +587,7 @@ fn unpack8_input_too_short() {
         0x11u8, 0x22u8, 0x33u8, 0x44u8, 0x05u8, 0x32u8, 0x43u8, 0x04u8, 0,
         0x33u8, 0x44u8, 0x55u8, 0x66u8, 0x07u8,
     ]; // too short!!
-    let mut sink = LongSink::new();
+    let mut sink = VecSink::<u64>::new();
     let res = nibble_unpack8(&compressed, &mut sink);
     assert_eq!(res, Err(CodingError::NotEnoughSpace));
 }
@@ -627,7 +600,7 @@ fn unpack8_4nibbles_allfull() {
     let mut buf = [0u8; 512];
     let written = nibble_pack8(&inputs, &mut buf, 0).unwrap();
 
-    let mut sink = LongSink::new();
+    let mut sink = VecSink::<u64>::new();
     let res = nibble_unpack8(&buf[..written], &mut sink);
     assert_eq!(res.unwrap().len(), 0);
     assert_eq!(sink.vec[..], inputs);
@@ -642,7 +615,7 @@ fn unpack8_partial_oddnibbles() {
         0x33u8, 0x44u8, 0x55u8, 0x66u8, 0x07u8, 0x54u8, 0x65u8, 0x06u8, 0,
         0x30u8, 0x54u8, 0x76u8, 0x98u8, 0x01u8,
         0x00u8, ]; // extra padding... just to test the return value
-    let mut sink = LongSink::new();
+    let mut sink = VecSink::<u64>::new();
     let res = nibble_unpack8(&compressed, &mut sink);
     assert_eq!(res.unwrap().len(), 1);
     assert_eq!(sink.vec.len(), 8);
@@ -664,7 +637,7 @@ fn pack_unpack_u64_plain() {
     let written = pack_u64(inputs.iter().cloned(), &mut buf, 0).unwrap();
     println!("Packed {} u64 inputs (plain) into {} bytes", inputs.len(), written);
 
-    let mut sink = LongSink::new();
+    let mut sink = VecSink::<u64>::new();
     let res = unpack(&buf[..written], &mut sink, inputs.len());
     assert_eq!(res.unwrap().len(), 0);
     assert_eq!(sink.vec[..inputs.len()], inputs);
@@ -761,7 +734,7 @@ mod props {
             let mut buf = [0u8; 256];
             nibble_pack8(&input, &mut buf, 0).unwrap();
 
-            let mut sink = LongSink::new();
+            let mut sink = VecSink::<u64>::new();
             let res = nibble_unpack8(&buf[..], &mut sink);
             assert_eq!(sink.vec[..], input);
         }

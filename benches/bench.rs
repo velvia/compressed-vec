@@ -132,7 +132,7 @@ const VECTOR_LENGTH: usize = 10000;
 
 fn dense_lowcard_vector() -> Vec<u8> {
     let inputs = sinewave_varnonzeros_u32(1.0, VECTOR_LENGTH);
-    let mut appender = vector::FixedSectU32Appender::new(8192).unwrap();
+    let mut appender = vector::VectorU32Appender::new(8192).unwrap();
     inputs.iter().for_each(|a| appender.append(*a).unwrap());
     appender.finish(VECTOR_LENGTH).unwrap()
 }
@@ -141,7 +141,7 @@ fn sparse_lowcard_vector(num_nonzeroes: usize) -> Vec<u8> {
     let nonzeroes = sinewave_varnonzeros_u32(1.0, num_nonzeroes/2);
     let nulls = VECTOR_LENGTH - num_nonzeroes;
 
-    let mut appender = vector::FixedSectU32Appender::new(8192).unwrap();
+    let mut appender = vector::VectorU32Appender::new(8192).unwrap();
     appender.append_nulls(nulls/4).unwrap();
     nonzeroes.iter().for_each(|a| appender.append(*a).unwrap());
     appender.append_nulls(nulls/2).unwrap();
@@ -155,8 +155,8 @@ fn bench_filter_vect(c: &mut Criterion) {
 
     let dense_vect = dense_lowcard_vector();
     let sparse_vect = sparse_lowcard_vector(100);
-    let dense_reader = vector::FixedSectIntReader::<u32>::try_new(&dense_vect[..]).unwrap();
-    let sparse_reader = vector::FixedSectIntReader::<u32>::try_new(&sparse_vect[..]).unwrap();
+    let dense_reader = vector::VectorReader::<u32>::try_new(&dense_vect[..]).unwrap();
+    let sparse_reader = vector::VectorReader::<u32>::try_new(&sparse_vect[..]).unwrap();
 
     group.bench_function("lowcard u32", |b| b.iter(|| {
         let filter_iter = dense_reader.filter_iter(filter::EqualsU32::new(3));

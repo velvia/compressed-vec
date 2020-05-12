@@ -6,14 +6,14 @@
 /// Appending values is easy.  Appenders dynamically size the input buffer.
 /// ```
 /// # use compressed_vec::vector::*;
-///     let mut appender = FixedSectU32Appender::new(1024).unwrap();
+///     let mut appender = VectorU32Appender::new(1024).unwrap();
 ///     appender.append(1).unwrap();
 ///     appender.append(2).unwrap();
 ///     appender.append_nulls(3).unwrap();
 ///     assert_eq!(appender.num_elements(), 5);
 ///
 ///     let reader = appender.reader();
-///     // Do something
+///     println!("Elements so far: {:?}", reader.iterate().count());
 ///
 ///     // Continue appending!
 ///     appender.append(10).unwrap();
@@ -166,7 +166,7 @@ impl FixedSectStats {
 
 const GROW_BYTES: usize = 4096;
 
-/// A builder for a BinaryVector holding encoded/compressed u64/u32 values
+/// A builder for a BinaryVector holding encoded/compressed integral/floating values
 /// as 256-element FixedSections.   Buffers elements to be written and writes
 /// them in 256-element sections at a time.  This builder owns its own write buffer memory, expanding it
 /// as needed.  `finish()` wraps up the vector, cloning a copy, and `reset()` can be called to reuse
@@ -174,7 +174,7 @@ const GROW_BYTES: usize = 4096;
 /// NOTE: the vector state (elements, num bytes etc) are only updated when a section is updated.
 /// So readers who read just the vector itself will not get the updates in write_buf.
 /// This appender must be consulted for querying write_buf values.
-pub struct FixedSectIntAppender<T, W>
+pub struct VectorAppender<T, W>
 where T: VectBase + Unsigned + Clone,
       W: FixedSectionWriter<T> {
     vect_buf: Vec<u8>,
@@ -185,10 +185,10 @@ where T: VectBase + Unsigned + Clone,
     sect_writer: PhantomData<W>     // Uses no space, this tells rustc we need W
 }
 
-impl<T, W> FixedSectIntAppender<T, W>
+impl<T, W> VectorAppender<T, W>
 where T: VectBase + Unsigned + Clone,
       W: FixedSectionWriter<T> {
-    /// Creates a new FixedSectIntAppender.  Usually you'll want to use one of the more concrete typed structs.
+    /// Creates a new VectorAppender.  Usually you'll want to use one of the more concrete typed structs.
     /// Also initializes the vect_buf with a valid section header.  Initial capacity is the initial size of the
     /// write buffer, which can grow.
     pub fn try_new(major_type: VectorType,
@@ -333,18 +333,18 @@ where T: VectBase + Unsigned + Clone,
     /// Obtains a reader for reading from the bytes of this appender.
     /// NOTE: reader will only read what has been written so far, and due to Rust borrowing rules, one should
     /// not attempt to read and append at the same time; the returned reader is not safe across threads.
-    pub fn reader(&self) -> FixedSectIntReader<T> {
+    pub fn reader(&self) -> VectorReader<T> {
         // This should never fail, as we have already proven we can initialize the vector
-        FixedSectIntReader::try_new(&self.vect_buf[..self.offset]).expect("Getting reader from appender failed")
+        VectorReader::try_new(&self.vect_buf[..self.offset]).expect("Getting reader from appender failed")
     }
 }
 
 /// Regular U64 appender with just plain NibblePacked encoding
-pub type FixedSectU64Appender = FixedSectIntAppender<u64, NibblePackU64MedFixedSect<'static>>;
+pub type VectorU64Appender = VectorAppender<u64, NibblePackU64MedFixedSect<'static>>;
 
-impl FixedSectU64Appender {
-    pub fn new(initial_capacity: usize) -> Result<FixedSectU64Appender, CodingError> {
-        FixedSectU64Appender::try_new(VectorType::FixedSection256, VectorSubType::Primitive,
+impl VectorU64Appender {
+    pub fn new(initial_capacity: usize) -> Result<VectorU64Appender, CodingError> {
+        VectorU64Appender::try_new(VectorType::FixedSection256, VectorSubType::Primitive,
                                       initial_capacity)
     }
 }
@@ -352,26 +352,26 @@ impl FixedSectU64Appender {
 /// Regular U32 appender with just plain NibblePacked encoding
 // NOTE: lifetime annotation of 'static is fine here as FixedSectionWriter has static methods only and do not
 // depend on structs
-pub type FixedSectU32Appender = FixedSectIntAppender<u32, NibblePackU32MedFixedSect<'static>>;
+pub type VectorU32Appender = VectorAppender<u32, NibblePackU32MedFixedSect<'static>>;
 
-impl FixedSectU32Appender {
-    pub fn new(initial_capacity: usize) -> Result<FixedSectU32Appender, CodingError> {
-        FixedSectU32Appender::try_new(VectorType::FixedSection256, VectorSubType::Primitive,
+impl VectorU32Appender {
+    pub fn new(initial_capacity: usize) -> Result<VectorU32Appender, CodingError> {
+        VectorU32Appender::try_new(VectorType::FixedSection256, VectorSubType::Primitive,
                                       initial_capacity)
     }
 }
 
 
-/// A reader for reading sections and elements from a `FixedSectIntAppender` written vector.
-/// Use the same base type - eg FixedSectU32Appender -> FixedSectIntReader::<u32>
+/// A reader for reading sections and elements from a `VectorAppender` written vector.
+/// Use the same base type - eg VectorU32Appender -> VectorReader::<u32>
 /// Can be reused many times; it has no mutable state and creates new iterators every time.
 // TODO: have a reader trait of some kind?
-pub struct FixedSectIntReader<'buf, T: VectBase> {
+pub struct VectorReader<'buf, T: VectBase> {
     vect_bytes: &'buf [u8],
     _reader: PhantomData<T>,
 }
 
-impl<'buf, T: VectBase> FixedSectIntReader<'buf, T> {
+impl<'buf, T: VectBase> VectorReader<'buf, T> {
     /// Creates a new reader out of the bytes for the vector.
     // TODO: verify that the vector is a fixed sect int.
     pub fn try_new(vect_bytes: &'buf [u8]) -> Result<Self, CodingError> {
@@ -388,18 +388,20 @@ impl<'buf, T: VectBase> FixedSectIntReader<'buf, T> {
         self.get_stats().num_elements as usize
     }
 
+    /// Iterates and discovers the number of null sections.  O(num_sections).  It will be faster to just use
+    /// get_stats().
+    pub fn num_null_sections(&self) -> usize {
+        self.sect_iter().filter(|sect| sect.is_null()).count()
+    }
+
+    /// Returns a FixedSectStats extracted from the vector header.
     pub fn get_stats(&self) -> FixedSectStats {
         self.vect_bytes.pread_with(BINARYVECT_HEADER_SIZE, LE).unwrap()
     }
 
-    /// Returns an iterator over sections and each section's bytes
+    /// Returns an iterator over each section in this vector
     pub fn sect_iter(&self) -> FixedSectIterator<'buf> {
         FixedSectIterator::new(&self.vect_bytes[NUM_HEADER_BYTES_TOTAL..])
-    }
-
-    /// Returns the number of null sections
-    pub fn num_null_sections(&self) -> usize {
-        self.sect_iter().filter(|sect| sect.is_null()).count()
     }
 
     /// Returns a VectorFilter that iterates over 256-bit masks filtered from vector elements
@@ -410,6 +412,16 @@ impl<'buf, T: VectBase> FixedSectIntReader<'buf, T> {
     /// Returns an iterator over all items in this vector.
     pub fn iterate(&self) -> VectorItemIter<'buf, T> {
         VectorItemIter::new(self.sect_iter(), self.num_elements())
+    }
+
+    /// Decodes/processes this vector's elements through a Sink.  This is the most general purpose vector
+    /// decoding/processing API.
+    pub fn decode_to_sink<Output>(&self, output: &mut Output) -> Result<(), CodingError>
+    where Output: Sink<T::SI> {
+        for sect in self.sect_iter() {
+            sect.decode::<T, _>(output)?;
+        }
+        Ok(())
     }
 }
 
@@ -472,7 +484,7 @@ fn test_append_u64_nonulls() {
     let num_values: usize = 500;
     let data: Vec<u64> = (0..num_values as u64).collect();
 
-    let mut appender = FixedSectU64Appender::new(1024).unwrap();
+    let mut appender = VectorU64Appender::new(1024).unwrap();
     {
         let reader = appender.reader();
 
@@ -491,7 +503,7 @@ fn test_append_u64_nonulls() {
 
     let finished_vec = appender.finish(num_values).unwrap();
 
-    let reader = FixedSectIntReader::try_new(&finished_vec[..]).unwrap();
+    let reader = VectorReader::try_new(&finished_vec[..]).unwrap();
     assert_eq!(reader.num_elements(), num_values);
     assert_eq!(reader.sect_iter().count(), 2);
     assert_eq!(reader.num_null_sections(), 0);
@@ -518,14 +530,14 @@ fn test_append_u64_mixed_nulls() {
     (0..num_nulls).for_each(|_i| all_data.push(0));
     all_data.extend_from_slice(&data2[..]);
 
-    let mut appender = FixedSectU64Appender::new(1024).unwrap();
+    let mut appender = VectorU64Appender::new(1024).unwrap();
     data1.iter().for_each(|&e| appender.append(e).unwrap());
     appender.append_nulls(num_nulls).unwrap();
     data2.iter().for_each(|&e| appender.append(e).unwrap());
 
     let finished_vec = appender.finish(total_elems).unwrap();
 
-    let reader = FixedSectIntReader::try_new(&finished_vec[..]).unwrap();
+    let reader = VectorReader::try_new(&finished_vec[..]).unwrap();
     assert_eq!(reader.num_elements(), total_elems);
     assert_eq!(reader.sect_iter().count(), 3);
     assert_eq!(reader.num_null_sections(), 1);
@@ -550,7 +562,7 @@ fn test_append_u64_mixed_nulls_grow() {
     all_data.extend_from_slice(&data1[..]);
     (0..num_nulls).for_each(|_i| all_data.push(0));
 
-    let mut appender = FixedSectU64Appender::new(300).unwrap();
+    let mut appender = VectorU64Appender::new(300).unwrap();
     data1.iter().for_each(|&e| appender.append(e).unwrap());
     appender.append_nulls(num_nulls).unwrap();
     data1.iter().for_each(|&e| appender.append(e).unwrap());
@@ -558,7 +570,7 @@ fn test_append_u64_mixed_nulls_grow() {
 
     let finished_vec = appender.finish(total_elems).unwrap();
 
-    let reader = FixedSectIntReader::try_new(&finished_vec[..]).unwrap();
+    let reader = VectorReader::try_new(&finished_vec[..]).unwrap();
     assert_eq!(reader.num_elements(), total_elems);
     assert_eq!(reader.sect_iter().count(), 6);
     assert_eq!(reader.num_null_sections(), 1);
@@ -571,13 +583,13 @@ fn test_append_u64_mixed_nulls_grow() {
 fn test_append_u32_and_filter() {
     // First test appending with no nulls.  Just 1,2,3,4 and filter for 3, should get 1/4 of appended elements
     let vector_size = 400;
-    let mut appender = FixedSectU32Appender::new(1024).unwrap();
+    let mut appender = VectorU32Appender::new(1024).unwrap();
     for i in 0..vector_size {
         appender.append((i % 4) + 1).unwrap();
     }
     let finished_vec = appender.finish(vector_size as usize).unwrap();
 
-    let reader = FixedSectIntReader::<u32>::try_new(&finished_vec[..]).unwrap();
+    let reader = VectorReader::<u32>::try_new(&finished_vec[..]).unwrap();
     assert_eq!(reader.num_elements(), vector_size as usize);
     assert_eq!(reader.sect_iter().count(), 2);
 
@@ -597,18 +609,24 @@ fn test_append_u32_and_filter() {
     }
     let finished_vec = appender.finish(total_elems as usize).unwrap();
 
-    let reader = FixedSectIntReader::<u32>::try_new(&finished_vec[..]).unwrap();
+    let reader = VectorReader::<u32>::try_new(&finished_vec[..]).unwrap();
     assert_eq!(reader.num_elements(), total_elems as usize);
 
     let filter_iter = reader.filter_iter(EqualsU32::new(3));
     let count = count_hits(filter_iter);
     assert_eq!(count, nonnulls * 2 / 4);
+
+    // Iterate and decode_to_sink to VecSink should produce same values... except for trailing zeroes
+    let mut sink = VecSink::<u32>::new();
+    reader.decode_to_sink(&mut sink).unwrap();
+    let it_data: Vec<u32> = reader.iterate().collect();
+    assert_eq!(sink.vec[..total_elems as usize], it_data[..]);
 }
 
 #[test]
 fn test_append_u32_large_vector() {
     // 9999 nulls, then an item, 10 times = 100k items total
-    let mut appender = FixedSectU32Appender::new(4096).unwrap();
+    let mut appender = VectorU32Appender::new(4096).unwrap();
     let vector_size = 100000;
     for _ in 0..10 {
         appender.append_nulls(9999).unwrap();
@@ -617,6 +635,6 @@ fn test_append_u32_large_vector() {
     assert_eq!(appender.num_elements(), vector_size);
 
     let finished_vec = appender.finish(vector_size).unwrap();
-    let reader = FixedSectIntReader::<u32>::try_new(&finished_vec[..]).unwrap();
+    let reader = VectorReader::<u32>::try_new(&finished_vec[..]).unwrap();
     assert_eq!(reader.num_elements(), vector_size as usize);
 }

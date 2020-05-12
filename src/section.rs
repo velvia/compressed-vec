@@ -311,7 +311,7 @@ impl<'buf> EnumToFSReader<u64> for ETFSR {
 
 /// This is a base trait to tie together many disparate types: SinkInput, the base number type of the vector,
 /// the FixedSectReader and Enum types, EnumToFSReader, etc. etc.
-/// Many other structs such as FixedSectIntReader and Filter structs will take VectBase as a base type.
+/// Many other structs such as VectorReader and Filter structs will take VectBase as a base type.
 /// Choose the base type for your vector - u32, u64 etc.  This should be same type used in Appender as well as
 /// readers, filters, etc.
 pub trait VectBase: Zero + Copy {

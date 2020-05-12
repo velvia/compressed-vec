@@ -51,6 +51,41 @@ pub trait Sink<Input: SinkInput> {
 }
 
 
+/// A Sink which writes all values to a Vec.  A good choice as the final Sink in a chain of Sink processors!
+/// Important!  This Sink will decode entire sections at a time, so the result will have up to 255 extra values.
+#[derive(Debug)]
+pub struct VecSink<T: VectBase> {
+    pub vec: Vec<T>,
+}
+
+const DEFAULT_CAPACITY: usize = 64;
+
+impl<T: VectBase> VecSink<T> {
+    pub fn new() -> Self {
+        VecSink { vec: Vec::with_capacity(DEFAULT_CAPACITY) }
+    }
+}
+
+impl<T: VectBase> Sink<T::SI> for VecSink<T> {
+    #[inline]
+    fn process(&mut self, data: T::SI) {
+        // So first we need to resize the Vec, then we write in values using write_to_slice
+        let new_len = self.vec.len() + 8;
+        self.vec.resize(new_len, T::zero());
+        data.write_to_slice(&mut self.vec[new_len-8..new_len]);
+    }
+
+    fn process_zeroes(&mut self) {
+        for _ in 0..8 {
+            self.vec.push(T::zero());
+        }
+    }
+
+    fn reset(&mut self) {
+        self.vec.clear()
+    }
+}
+
 // #[repr(simd)]  // SIMD 32x8 alignment
 // struct U32Values([u32; 256]);
 
