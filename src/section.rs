@@ -206,9 +206,6 @@ pub trait FixedSection {
 
     /// Return the byte slice corresponding to section bytes, if available
     fn sect_bytes(&self) -> Option<&[u8]>;
-
-    /// Is this a null section?  Default to false
-    fn is_null(&self) -> bool { false }
 }
 
 #[enum_dispatch(FixedSection)]
@@ -234,9 +231,19 @@ impl<'buf> FixedSectEnum<'buf> {
     ///     sect.decode::<u32, _>(&mut sink).unwrap();
     ///     println!("{:?}", sink.values.iter().count());
     /// ```
+    #[inline]
     pub fn decode<T, S>(self, sink: &mut S) -> Result<(), CodingError>
     where T: VectBase, S: Sink<T::SI> {
         T::Mapper::decode_to_sink(self, sink)
+    }
+
+    /// Is this a null section?
+    #[inline]
+    pub fn is_null(&self) -> bool {
+        match self {
+            FixedSectEnum::NullFixedSect(_) => true,
+            _ => false,
+        }
     }
 }
 
@@ -285,6 +292,7 @@ pub trait EnumToFSReader<T: VectBase> {
 pub struct ETFSR {}
 
 impl<'buf> EnumToFSReader<u32> for ETFSR {
+    #[inline]
     fn decode_to_sink<Output>(e: FixedSectEnum, output: &mut Output) -> Result<(), CodingError>
         where Output: Sink<u32x8> {
         match e {
@@ -297,6 +305,7 @@ impl<'buf> EnumToFSReader<u32> for ETFSR {
 }
 
 impl<'buf> EnumToFSReader<u64> for ETFSR {
+    #[inline]
     fn decode_to_sink<Output>(e: FixedSectEnum, output: &mut Output) -> Result<(), CodingError>
         where Output: Sink<[u64; 8]> {
         match e {
@@ -349,10 +358,10 @@ impl NullFixedSect {
 impl FixedSection for NullFixedSect {
     fn num_bytes(&self) -> usize { 1 }
     fn sect_bytes(&self) -> Option<&[u8]> { None }
-    fn is_null(&self) -> bool { true }
 }
 
 impl<T: VectBase> FixedSectReader<T> for NullFixedSect {
+    #[inline]
     fn decode_to_sink<Output>(&self, output: &mut Output) -> Result<(), CodingError>
         where Output: Sink<T::SI> {
         for _ in 0..FIXED_LEN/8 {
@@ -396,6 +405,7 @@ impl<'buf> NibblePackU64MedFixedSect<'buf> {
 }
 
 impl<'buf> FixedSectReader<u64> for NibblePackU64MedFixedSect<'buf> {
+    #[inline]
     fn decode_to_sink<Output>(&self, output: &mut Output) -> Result<(), CodingError>
         where Output: Sink<[u64; 8]> {
         let mut values_left = FIXED_LEN;
@@ -457,6 +467,7 @@ impl<'buf> NibblePackU32MedFixedSect<'buf> {
 }
 
 impl<'buf> FixedSectReader<u32> for NibblePackU32MedFixedSect<'buf> {
+    #[inline]
     fn decode_to_sink<Output>(&self, output: &mut Output) -> Result<(), CodingError>
         where Output: Sink<u32x8> {
         let mut values_left = FIXED_LEN;

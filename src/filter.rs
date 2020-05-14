@@ -75,7 +75,7 @@ impl Sink<u32x8> for EqualsU32Sink {
 /// For each type of filter, a SectionFilter implements how to filter that section
 /// according to each filter type.
 pub trait SectionFilter {
-    // Filters each section, producing a mask of hits for each row in a 256-row section
+    // Filters each section, producing a mask of hits for each item in a 256-item section
     fn filter_sect(&mut self, sect: FixedSectEnum) -> Result<u32x8, CodingError>;
 }
 
@@ -85,15 +85,12 @@ const NO_MATCHES: u32x8 = u32x8::splat(0);
 impl SectionFilter for EqualsU32 {
     #[inline]
     fn filter_sect(&mut self, sect: FixedSectEnum) -> Result<u32x8, CodingError> {
-        match sect {
-            FixedSectEnum::NullFixedSect(_) =>
-                if self.pred == 0 { Ok(ALL_MATCHES) } else { Ok(NO_MATCHES) },
-            FixedSectEnum::NibblePackU32MedFixedSect(sect) => {
-                self.sink.reset();
-                sect.decode_to_sink(&mut self.sink)?;
-                Ok(self.sink.get_mask())
-            },
-            _ => panic!("Cannot use this filter on that section type, must be wrong vector"),
+        if sect.is_null() {
+            if self.pred == 0 { Ok(ALL_MATCHES) } else { Ok(NO_MATCHES) }
+        } else {
+            self.sink.reset();
+            sect.decode::<u32, _>(&mut self.sink)?;
+            Ok(self.sink.get_mask())
         }
         // If we are trying to match 0, then everything matches.  Otherwise, nothing matches!  Easy!
     }
