@@ -2,30 +2,29 @@
 /// U32 vectors have SIMD-enabled filtering support for each section, which is
 /// 256 elements long to enable SIMD bitmasking on AVX2 with a single instruction.
 ///
-use std::collections::HashSet;
+use core::marker::PhantomData;
 
 use packed_simd::u32x8;
 
-use crate::error::CodingError;
 use crate::section::*;
 use crate::sink::Sink;
 
-/// Filters on value exactly equal
-pub struct EqualsU32 {
-    pred: u32,
-    sink: EqualsU32Sink,
+
+/// A Sink designed to filter 256-section vectors.  The workflow:
+/// 1. Call sink.reset()
+/// 2. Call decode on section with this sink
+/// 3. get_mask()
+/// - If the section is null, instead call null_mask()
+pub trait SectFilterSink<T: VectBase>: Sink<T::SI> {
+    /// Gets the mask, one bit is ON for each match in the section
+    fn get_mask(&self) -> u32x8;
+
+    /// Returns a mask when its a null section
+    fn null_mask(&self) -> u32x8;
 }
 
-impl EqualsU32 {
-    pub fn new(pred: u32) -> Self {
-        Self { pred, sink: EqualsU32Sink::new(pred) }
-    }
-}
 
-/// Filters on value being one of the supplied values
-pub struct OneOfU32(HashSet<u32>);
-
-/// Sink for SIMD-enhanced U32 filtering
+/// Sink for SIMD-enhanced U32 Equality filtering
 #[repr(align(16))]   // To ensure the mask is aligned and can transmute to u32
 #[derive(Debug)]
 pub struct EqualsU32Sink {
@@ -44,14 +43,6 @@ impl EqualsU32Sink {
             pred_is_zero: pred == 0
         }
     }
-
-    pub fn get_mask(&self) -> u32x8 {
-        // NOTE: we transmute the mask to u32; 8.  This is safe because we have aligned the struct for 16 bytes.
-        let u32array = unsafe {
-            std::mem::transmute::<[u8; 32], [u32; 8]>(self.mask)
-        };
-        u32x8::from(u32array)
-    }
 }
 
 impl Sink<u32x8> for EqualsU32Sink {
@@ -67,45 +58,53 @@ impl Sink<u32x8> for EqualsU32Sink {
         self.i += 1;
     }
 
+    #[inline]
     fn reset(&mut self) {
         self.i = 0;
     }
 }
 
-/// For each type of filter, a SectionFilter implements how to filter that section
-/// according to each filter type.
-pub trait SectionFilter {
-    // Filters each section, producing a mask of hits for each item in a 256-item section
-    fn filter_sect(&mut self, sect: FixedSectEnum) -> Result<u32x8, CodingError>;
-}
-
 const ALL_MATCHES: u32x8 = u32x8::splat(0xffff_ffff);  // All 1's
 const NO_MATCHES: u32x8 = u32x8::splat(0);
 
-impl SectionFilter for EqualsU32 {
+impl SectFilterSink<u32> for EqualsU32Sink {
     #[inline]
-    fn filter_sect(&mut self, sect: FixedSectEnum) -> Result<u32x8, CodingError> {
-        if sect.is_null() {
-            if self.pred == 0 { Ok(ALL_MATCHES) } else { Ok(NO_MATCHES) }
-        } else {
-            self.sink.reset();
-            sect.decode::<u32, _>(&mut self.sink)?;
-            Ok(self.sink.get_mask())
-        }
-        // If we are trying to match 0, then everything matches.  Otherwise, nothing matches!  Easy!
+    fn get_mask(&self) -> u32x8 {
+        // NOTE: we transmute the mask to u32; 8.  This is safe because we have aligned the struct for 16 bytes.
+        let u32array = unsafe {
+            std::mem::transmute::<[u8; 32], [u32; 8]>(self.mask)
+        };
+        u32x8::from(u32array)
     }
+
+    #[inline]
+    fn null_mask(&self) -> u32x8 {
+        if self.pred_is_zero { ALL_MATCHES } else { NO_MATCHES }
+    }
+}
+
+/// A Unary filter takes one mask input, does some kind of filtering and creates a new mask.
+/// Filters that process and filter vectors are a subset of the above.
+pub trait UnaryFilter {
+    /// Filters input mask where each bit ON = match, and returns output mask
+    fn filter(input: u32x8) -> u32x8;
 }
 
 /// Allows for filtering over each section of a vector.
 /// Yields an Iterator of u32x8 mask for each section in the vector.
-pub struct VectorFilter<'buf, SF: SectionFilter> {
+pub struct VectorFilter<'buf, SF, T>
+where T: VectBase,
+      SF: SectFilterSink<T> {
     sect_iter: FixedSectIterator<'buf>,
     sf: SF,
+    _t: PhantomData<T>,
 }
 
-impl<'buf, SF: SectionFilter> VectorFilter<'buf, SF> {
-    pub fn new(vector_bytes: &'buf [u8], sf: SF) -> VectorFilter<'buf, SF> {
-        Self { sect_iter: FixedSectIterator::new(vector_bytes), sf }
+impl<'buf, SF, T> VectorFilter<'buf, SF, T>
+where T: VectBase,
+      SF: SectFilterSink<T> {
+    pub fn new(vector_bytes: &'buf [u8], sf: SF) -> Self {
+        Self { sect_iter: FixedSectIterator::new(vector_bytes), sf, _t: PhantomData }
     }
 
     /// Advances the iterator without calling the filter.  This is used to skip processing the filter
@@ -115,12 +114,24 @@ impl<'buf, SF: SectionFilter> VectorFilter<'buf, SF> {
     }
 }
 
-impl<'buf, SF: SectionFilter> Iterator for VectorFilter<'buf, SF> {
+impl<'buf, SF, T> Iterator for VectorFilter<'buf, SF, T>
+where T: VectBase,
+      SF: SectFilterSink<T>  {
     type Item = u32x8;
+
     #[inline]
     fn next(&mut self) -> Option<u32x8> {
         self.sect_iter.next()
-            .and_then(|sect| self.sf.filter_sect(sect).ok())
+            // .and_then(|sect| self.sf.filter_sect(sect).ok())
+            .and_then(|sect| {
+                if sect.is_null() {
+                    Some(self.sf.null_mask())
+                } else {
+                    self.sf.reset();
+                    sect.decode::<T, _>(&mut self.sf).ok()?;
+                    Some(self.sf.get_mask())
+                }
+            })
     }
 }
 
@@ -130,19 +141,27 @@ impl<'buf, SF: SectionFilter> Iterator for VectorFilter<'buf, SF> {
 /// It has one optimization: it short-circuits the ANDing as soon as the masking creates
 /// an all-zero mask.  Thus it makes sense to put the most sparse and least likely to hit
 /// vector first.
-pub struct MultiVectorFilter<'buf , SF: SectionFilter> {
-    vect_filters: Vec<VectorFilter<'buf, SF>>
+pub struct MultiVectorFilter<'buf , SF, T>
+where SF: SectFilterSink<T>,
+       T: VectBase {
+    vect_filters: Vec<VectorFilter<'buf, SF, T>>
 }
 
-impl<'buf, SF: SectionFilter> MultiVectorFilter<'buf, SF> {
-    pub fn new(vect_filters: Vec<VectorFilter<'buf, SF>>) -> Self {
+impl<'buf, SF, T> MultiVectorFilter<'buf, SF, T>
+where SF: SectFilterSink<T>,
+       T: VectBase {
+    pub fn new(vect_filters: Vec<VectorFilter<'buf, SF, T>>) -> Self {
         if vect_filters.is_empty() { panic!("Cannot pass in empty filters to MultiVectorFilter"); }
         Self { vect_filters }
     }
 }
 
-impl<'buf, SF: SectionFilter> Iterator for MultiVectorFilter<'buf, SF> {
+impl<'buf, SF, T> Iterator for MultiVectorFilter<'buf, SF, T>
+where SF: SectFilterSink<T>,
+       T: VectBase {
     type Item = u32x8;
+
+    #[inline]
     fn next(&mut self) -> Option<u32x8> {
         // Get first filter
         let mut mask = match self.vect_filters[0].next() {

@@ -159,22 +159,22 @@ fn bench_filter_vect(c: &mut Criterion) {
     let sparse_reader = vector::VectorReader::<u32>::try_new(&sparse_vect[..]).unwrap();
 
     group.bench_function("lowcard u32", |b| b.iter(|| {
-        let filter_iter = dense_reader.filter_iter(filter::EqualsU32::new(3));
+        let filter_iter = dense_reader.filter_iter(filter::EqualsU32Sink::new(3));
         filter::count_hits(filter_iter);
     }));
     group.bench_function("very sparse lowcard u32", |b| b.iter(|| {
-        let filter_iter = sparse_reader.filter_iter(filter::EqualsU32::new(15));
+        let filter_iter = sparse_reader.filter_iter(filter::EqualsU32Sink::new(15));
         filter::count_hits(filter_iter);
     }));
     group.bench_function("dense + sparse lowcard combo", |b| b.iter(|| {
-        let dense_iter = dense_reader.filter_iter(filter::EqualsU32::new(3));
-        let sparse_iter = sparse_reader.filter_iter(filter::EqualsU32::new(15));
+        let dense_iter = dense_reader.filter_iter(filter::EqualsU32Sink::new(3));
+        let sparse_iter = sparse_reader.filter_iter(filter::EqualsU32Sink::new(15));
         let filter_iter = filter::MultiVectorFilter::new(vec![dense_iter, sparse_iter]);
         filter::count_hits(filter_iter);
     }));
     group.bench_function("sparse + dense lowcard combo", |b| b.iter(|| {
-        let dense_iter = dense_reader.filter_iter(filter::EqualsU32::new(3));
-        let sparse_iter = sparse_reader.filter_iter(filter::EqualsU32::new(15));
+        let dense_iter = dense_reader.filter_iter(filter::EqualsU32Sink::new(3));
+        let sparse_iter = sparse_reader.filter_iter(filter::EqualsU32Sink::new(15));
         let filter_iter = filter::MultiVectorFilter::new(vec![sparse_iter, dense_iter]);
         filter::count_hits(filter_iter);
     }));

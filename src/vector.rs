@@ -31,7 +31,7 @@ use num::Unsigned;
 use scroll::{ctx, Endian, Pread, Pwrite, LE};
 
 use crate::error::CodingError;
-use crate::filter::{EqualsU32, SectionFilter, VectorFilter, count_hits};
+use crate::filter::{EqualsU32Sink, SectFilterSink, VectorFilter, count_hits};
 use crate::section::*;
 use crate::sink::*;
 
@@ -405,7 +405,7 @@ impl<'buf, T: VectBase> VectorReader<'buf, T> {
     }
 
     /// Returns a VectorFilter that iterates over 256-bit masks filtered from vector elements
-    pub fn filter_iter<F: SectionFilter>(&self, f: F) -> VectorFilter<'buf, F> {
+    pub fn filter_iter<F: SectFilterSink<T>>(&self, f: F) -> VectorFilter<'buf, F, T> {
         VectorFilter::new(&self.vect_bytes[NUM_HEADER_BYTES_TOTAL..], f)
     }
 
@@ -593,7 +593,7 @@ fn test_append_u32_and_filter() {
     assert_eq!(reader.num_elements(), vector_size as usize);
     assert_eq!(reader.sect_iter().count(), 2);
 
-    let filter_iter = reader.filter_iter(EqualsU32::new(3));
+    let filter_iter = reader.filter_iter(EqualsU32Sink::new(3));
     let count = count_hits(filter_iter);
     assert_eq!(count, vector_size / 4);
 
@@ -612,7 +612,7 @@ fn test_append_u32_and_filter() {
     let reader = VectorReader::<u32>::try_new(&finished_vec[..]).unwrap();
     assert_eq!(reader.num_elements(), total_elems as usize);
 
-    let filter_iter = reader.filter_iter(EqualsU32::new(3));
+    let filter_iter = reader.filter_iter(EqualsU32Sink::new(3));
     let count = count_hits(filter_iter);
     assert_eq!(count, nonnulls * 2 / 4);
 
