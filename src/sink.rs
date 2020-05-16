@@ -12,26 +12,57 @@ use packed_simd::u32x8;
 
 /// An input to a sink.  Sinks take a type which represents 8 values of an int, such as [u64; 8].
 /// Item type represents the underlying type of each individual item in the 8 item SinkInput.
-pub trait SinkInput {
+pub trait SinkInput: Copy {
     type Item: Zero + Copy;
 
     /// Writes the sink input to a mutable slice of type Item
     fn write_to_slice(&self, slice: &mut [Self::Item]);
+
+    /// Creates one of these types from a base Item type by splatting (replicating it 8x)
+    fn splat(item: Self::Item) -> Self;
+
+    /// Methods for implementing filtering/masking.
+    /// Compares my 8 values to other 8 values, returning a bitmask for equality
+    fn eq_mask(self, other: Self) -> u8;
 }
 
 impl SinkInput for [u64; 8] {
     type Item = u64;
 
+    #[inline]
     fn write_to_slice(&self, slice: &mut [Self::Item]) { slice.copy_from_slice(self) }
+
+    #[inline]
+    fn splat(item: u64) -> Self { [item; 8] }
+
+    #[inline]
+    fn eq_mask(self, other: Self) -> u8 {
+        let mut mask = 0u8;
+        for i in 0..8 {
+            if self[i] == other[i] {
+                mask |= 1 << i;
+            }
+        }
+        mask
+    }
 }
 
 impl SinkInput for u32x8 {
     type Item = u32;
 
+    #[inline]
     fn write_to_slice(&self, slice: &mut [Self::Item]) {
         // NOTE: use unaligned writes for now.  See simd_aligned for a possible solution.
         // Pointer check align_offset is not enabled for now.
         self.write_to_slice_unaligned(slice);
+    }
+
+    #[inline]
+    fn splat(item: u32) -> Self { u32x8::splat(item) }
+
+    #[inline]
+    fn eq_mask(self, other: Self) -> u8 {
+        self.eq(other).bitmask()
     }
 }
 
@@ -75,6 +106,7 @@ impl<T: VectBase> Sink<T::SI> for VecSink<T> {
         data.write_to_slice(&mut self.vec[new_len-8..new_len]);
     }
 
+    #[inline]
     fn process_zeroes(&mut self) {
         for _ in 0..8 {
             self.vec.push(T::zero());

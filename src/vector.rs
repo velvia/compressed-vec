@@ -31,7 +31,7 @@ use num::Unsigned;
 use scroll::{ctx, Endian, Pread, Pwrite, LE};
 
 use crate::error::CodingError;
-use crate::filter::{EqualsU32Sink, SectFilterSink, VectorFilter, count_hits};
+use crate::filter::{EqualsSink, SectFilterSink, VectorFilter, count_hits};
 use crate::section::*;
 use crate::sink::*;
 
@@ -593,8 +593,8 @@ fn test_append_u32_and_filter() {
     assert_eq!(reader.num_elements(), vector_size as usize);
     assert_eq!(reader.sect_iter().count(), 2);
 
-    let filter_iter = reader.filter_iter(EqualsU32Sink::new(3));
-    let count = count_hits(filter_iter);
+    let filter_iter = reader.filter_iter(EqualsSink::<u32>::new(3));
+    let count = count_hits(filter_iter) as u32;
     assert_eq!(count, vector_size / 4);
 
     // Test appending with stretches of nulls.  300, then 400 nulls, then 300 elements again
@@ -612,8 +612,8 @@ fn test_append_u32_and_filter() {
     let reader = VectorReader::<u32>::try_new(&finished_vec[..]).unwrap();
     assert_eq!(reader.num_elements(), total_elems as usize);
 
-    let filter_iter = reader.filter_iter(EqualsU32Sink::new(3));
-    let count = count_hits(filter_iter);
+    let filter_iter = reader.filter_iter(EqualsSink::<u32>::new(3));
+    let count = count_hits(filter_iter) as u32;
     assert_eq!(count, nonnulls * 2 / 4);
 
     // Iterate and decode_to_sink to VecSink should produce same values... except for trailing zeroes
