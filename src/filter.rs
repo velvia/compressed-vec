@@ -2,6 +2,8 @@
 /// U32 vectors have SIMD-enabled filtering support for each section, which is
 /// 256 elements long to enable SIMD bitmasking on AVX2 with a single instruction.
 ///
+/// TODO: add examples for EqualsSink, OneOfSink, etc.
+///
 use core::marker::PhantomData;
 
 use packed_simd::u32x8;
@@ -25,14 +27,14 @@ pub trait SectFilterSink<T: VectBase>: Sink<T::SI> {
 
 
 /// A Predicate is the value(s) for a filter to filter against
-pub trait Predicate<T: VectBase>: Copy {
-    type Input: Copy;
+pub trait Predicate<T: VectBase> {
+    type Input;
 
     /// Returns true if the predicate matches null or zero values
-    fn pred_matches_zero(input: Self::Input) -> bool;
+    fn pred_matches_zero(input: &Self::Input) -> bool;
 
     /// Creates this predicate from a predicate input type
-    fn from_input(input: Self::Input) -> Self;
+    fn from_input(input: &Self::Input) -> Self;
 }
 
 pub trait InnerFilter<T: VectBase> {
@@ -40,7 +42,7 @@ pub trait InnerFilter<T: VectBase> {
 
     /// This method is called with the SinkInput from the decoder, and has to do filtering using
     /// the predicate type and return a bitmask; LSB=first item processed
-    fn filter_bitmask(pred: Self::P, decoded: T::SI) -> u8;
+    fn filter_bitmask(pred: &Self::P, decoded: T::SI) -> u8;
 }
 
 /// Sink designed to filter 8 items at a time from the decoder, building up a bitmask for each section.
@@ -55,7 +57,7 @@ pub struct GenericFilterSink<T: VectBase, IF: InnerFilter<T>> {
 }
 
 impl<T: VectBase, IF: InnerFilter<T>> GenericFilterSink<T, IF> {
-    pub fn new(input: <IF::P as Predicate<T>>::Input) -> Self {
+    pub fn new(input: &<IF::P as Predicate<T>>::Input) -> Self {
         Self {
             mask: [0u8; 32],
             predicate: IF::P::from_input(input),
@@ -74,7 +76,7 @@ impl<T: VectBase, IF: InnerFilter<T>> Sink<T::SI> for GenericFilterSink<T, IF> {
 
     #[inline]
     fn process(&mut self, unpacked: T::SI) {
-        self.mask[self.i] = IF::filter_bitmask(self.predicate, unpacked);
+        self.mask[self.i] = IF::filter_bitmask(&self.predicate, unpacked);
         self.i += 1;
     }
 
@@ -105,18 +107,21 @@ impl<T: VectBase, IF: InnerFilter<T>> SectFilterSink<T> for GenericFilterSink<T,
 
 
 ///  A predicate containing 8 values (probably SIMD) of each type for single comparisons
-type SingleValuePredicate<T> = <T as VectBase>::SI;
+// type SingleValuePredicate<T> = <T as VectBase>::SI;
+pub struct SingleValuePredicate<T: VectBase> {
+    pred: T::SI,
+}
 
 impl<T: VectBase> Predicate<T> for SingleValuePredicate<T> {
     type Input = T;
     #[inline]
-    fn pred_matches_zero(input: T) -> bool {
+    fn pred_matches_zero(input: &T) -> bool {
         input.is_zero()
     }
 
     #[inline]
-    fn from_input(input: T) -> Self {
-        T::SI::splat(input)
+    fn from_input(input: &T) -> Self {
+        Self { pred: T::SI::splat(*input) }
     }
 }
 
@@ -125,13 +130,49 @@ pub struct EqualsIF {}
 impl<T: VectBase> InnerFilter<T> for EqualsIF {
     type P = SingleValuePredicate<T>;
     #[inline]
-    fn filter_bitmask(pred: T::SI, decoded: T::SI) -> u8 {
-        T::SI::eq_mask(pred, decoded)
+    fn filter_bitmask(p: &Self::P, decoded: T::SI) -> u8 {
+        T::SI::eq_mask(p.pred, decoded)
     }
 }
 
-
 pub type EqualsSink<T> = GenericFilterSink<T, EqualsIF>;
+
+
+///  A predicate for low cardinality SET membership (one of/IN matches), consisting of a Vec of 8 values each
+pub struct MembershipPredicate<T: VectBase> {
+    set: Vec<T::SI>,
+}
+
+impl<T: VectBase> Predicate<T> for MembershipPredicate<T> {
+    type Input = Vec<T>;  // TODO: switch to smallvec to avoid allocations for small card?
+    #[inline]
+    fn pred_matches_zero(input: &Vec<T>) -> bool {
+        // If any member of set is 0, then pred can match 0
+        input.iter().any(|x| x.is_zero())
+    }
+
+    #[inline]
+    fn from_input(input: &Vec<T>) -> Self {
+        Self { set: input.iter().map(|&item| T::SI::splat(item)).collect() }
+    }
+}
+
+pub struct OneOfIF {}
+
+impl<T: VectBase> InnerFilter<T> for OneOfIF {
+    type P = MembershipPredicate<T>;
+    #[inline]
+    fn filter_bitmask(p: &Self::P, decoded: T::SI) -> u8 {
+        // SIMD compare of decoded value with each of the predicates, OR resulting masks
+        let mut mask = 0u8;
+        for pred in &p.set {
+            mask |= T::SI::eq_mask(*pred, decoded);
+        }
+        mask
+    }
+}
+
+pub type OneOfSink<T> = GenericFilterSink<T, OneOfIF>;
 
 
 /// A Unary filter takes one mask input, does some kind of filtering and creates a new mask.
@@ -160,6 +201,7 @@ where T: VectBase,
 
     /// Advances the iterator without calling the filter.  This is used to skip processing the filter
     /// for short circuiting.
+    #[inline]
     pub fn advance(&mut self) {
         self.sect_iter.next();
     }
@@ -173,7 +215,6 @@ where T: VectBase,
     #[inline]
     fn next(&mut self) -> Option<u32x8> {
         self.sect_iter.next()
-            // .and_then(|sect| self.sf.filter_sect(sect).ok())
             .and_then(|sect| {
                 if sect.is_null() {
                     Some(self.sf.null_mask())
@@ -277,7 +318,7 @@ where I: Iterator<Item = u32x8> {
 }
 
 
-use crate::vector::{VectorU64Appender, VectorReader};
+use crate::vector::{VectorU32Appender, VectorU64Appender, VectorReader};
 
 #[test]
 fn test_filter_u64_equals() {
@@ -289,11 +330,34 @@ fn test_filter_u64_equals() {
     let finished_vec = appender.finish(vector_size).unwrap();
 
     let reader = VectorReader::<u64>::try_new(&finished_vec[..]).unwrap();
-    let filter_iter = reader.filter_iter(EqualsSink::<u64>::new(3));
+    let filter_iter = reader.filter_iter(EqualsSink::<u64>::new(&3));
     let matches = match_positions(filter_iter);
     assert_eq!(matches.len(), vector_size / 4);
 
     // 1, 2, 3... so match for 3 starts at position 2
     let expected_pos: Vec<_> = (2..vector_size).step_by(4).collect();
+    assert_eq!(matches, expected_pos);
+}
+
+#[test]
+fn test_filter_u32_oneof() {
+    let vector_size: usize = 400;
+    let mut appender = VectorU32Appender::new(1024).unwrap();
+    for i in 0..vector_size {
+        appender.append((i as u32 % 12) + 1).unwrap();
+    }
+    let finished_vec = appender.finish(vector_size).unwrap();
+
+    let reader = VectorReader::<u32>::try_new(&finished_vec[..]).unwrap();
+    let filter_iter = reader.filter_iter(OneOfSink::<u32>::new(&vec![3, 5]));
+    let matches = match_positions(filter_iter);
+
+    // 3 and 5 are 1/6th of 12 values.  400/6=66 but 400%12=4, so the 3 is last value matched again
+    assert_eq!(matches.len(), 67);
+
+    // 3, 5 are positions 2, 4..... etc.
+    let mut expected_pos: Vec<_> = (2..vector_size).step_by(12).map(|i| vec![i, i+2]).flatten().collect();
+    // have to trim last item
+    expected_pos.resize(67, 0);
     assert_eq!(matches, expected_pos);
 }

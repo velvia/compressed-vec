@@ -593,7 +593,7 @@ fn test_append_u32_and_filter() {
     assert_eq!(reader.num_elements(), vector_size as usize);
     assert_eq!(reader.sect_iter().count(), 2);
 
-    let filter_iter = reader.filter_iter(EqualsSink::<u32>::new(3));
+    let filter_iter = reader.filter_iter(EqualsSink::<u32>::new(&3));
     let count = count_hits(filter_iter) as u32;
     assert_eq!(count, vector_size / 4);
 
@@ -612,7 +612,7 @@ fn test_append_u32_and_filter() {
     let reader = VectorReader::<u32>::try_new(&finished_vec[..]).unwrap();
     assert_eq!(reader.num_elements(), total_elems as usize);
 
-    let filter_iter = reader.filter_iter(EqualsSink::<u32>::new(3));
+    let filter_iter = reader.filter_iter(EqualsSink::<u32>::new(&3));
     let count = count_hits(filter_iter) as u32;
     assert_eq!(count, nonnulls * 2 / 4);
 
