@@ -262,11 +262,14 @@ where I: Iterator<Item = u32x8> {
     filter_iter.for_each(|mask| {
         for word in 0..8 {
             let u32mask = mask.extract(word);
-            for bit in 0..32 {
-                if (u32mask & (1 << bit)) != 0 {
-                    matches.push(pos);
+            if u32mask != 0 {
+                // TODO: find highest bit (intrinsic) for O(on bits) speed
+                for bit in 0..32 {
+                    if (u32mask & (1 << bit)) != 0 {
+                        matches.push(pos);
+                    }
+                    pos += 1;
                 }
-                pos += 1;
             }
         }
     });
