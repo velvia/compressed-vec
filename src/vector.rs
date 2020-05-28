@@ -340,7 +340,7 @@ where T: VectBase + Unsigned + Clone,
 }
 
 /// Regular U64 appender with just plain NibblePacked encoding
-pub type VectorU64Appender = VectorAppender<u64, NibblePackU64MedFixedSect<'static>>;
+pub type VectorU64Appender = VectorAppender<u64, NibblePackMedFixedSect<'static, u64>>;
 
 impl VectorU64Appender {
     pub fn new(initial_capacity: usize) -> Result<VectorU64Appender, CodingError> {
@@ -352,7 +352,7 @@ impl VectorU64Appender {
 /// Regular U32 appender with just plain NibblePacked encoding
 // NOTE: lifetime annotation of 'static is fine here as FixedSectionWriter has static methods only and do not
 // depend on structs
-pub type VectorU32Appender = VectorAppender<u32, NibblePackU32MedFixedSect<'static>>;
+pub type VectorU32Appender = VectorAppender<u32, NibblePackMedFixedSect<'static, u32>>;
 
 impl VectorU32Appender {
     pub fn new(initial_capacity: usize) -> Result<VectorU32Appender, CodingError> {
@@ -400,7 +400,7 @@ impl<'buf, T: VectBase> VectorReader<'buf, T> {
     }
 
     /// Returns an iterator over each section in this vector
-    pub fn sect_iter(&self) -> FixedSectIterator<'buf> {
+    pub fn sect_iter(&self) -> FixedSectIterator<'buf, T> {
         FixedSectIterator::new(&self.vect_bytes[NUM_HEADER_BYTES_TOTAL..])
     }
 
@@ -419,7 +419,7 @@ impl<'buf, T: VectBase> VectorReader<'buf, T> {
     pub fn decode_to_sink<Output>(&self, output: &mut Output) -> Result<(), CodingError>
     where Output: Sink<T::SI> {
         for sect in self.sect_iter() {
-            sect.decode::<T, _>(output)?;
+            sect.decode(output)?;
         }
         Ok(())
     }
@@ -430,14 +430,14 @@ impl<'buf, T: VectBase> VectorReader<'buf, T> {
 /// Panics on decoding error - there's no really good way for an iterator to return an error
 // NOTE: part of reason to do this is to better control lifetimes which is hard otherwise
 pub struct VectorItemIter<'buf, T: VectBase> {
-    sect_iter: FixedSectIterator<'buf>,
+    sect_iter: FixedSectIterator<'buf, T>,
     sink: Section256Sink<T>,
     num_elems: usize,
     i: usize,
 }
 
 impl<'buf, T: VectBase> VectorItemIter<'buf, T> {
-    pub fn new(sect_iter: FixedSectIterator<'buf>, num_elems: usize) -> Self {
+    pub fn new(sect_iter: FixedSectIterator<'buf, T>, num_elems: usize) -> Self {
         let mut s = Self {
             sect_iter,
             sink: Section256Sink::<T>::new(),
@@ -453,7 +453,7 @@ impl<'buf, T: VectBase> VectorItemIter<'buf, T> {
     fn next_section(&mut self) {
         self.sink.reset();
         if let Some(next_sect) = self.sect_iter.next() {
-            next_sect.decode::<T, _>(&mut self.sink).expect("Unexpected end of section");
+            next_sect.decode(&mut self.sink).expect("Unexpected end of section");
         }
     }
 }

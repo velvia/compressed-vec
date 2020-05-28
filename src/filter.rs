@@ -189,7 +189,7 @@ pub trait UnaryFilter {
 pub struct VectorFilter<'buf, SF, T>
 where T: VectBase,
       SF: SectFilterSink<T> {
-    sect_iter: FixedSectIterator<'buf>,
+    sect_iter: FixedSectIterator<'buf, T>,
     sf: SF,
     _t: PhantomData<T>,
 }
@@ -222,7 +222,7 @@ where T: VectBase,
                     Some(self.sf.null_mask())
                 } else {
                     self.sf.reset();
-                    sect.decode::<T, _>(&mut self.sf).ok()?;
+                    sect.decode(&mut self.sf).ok()?;
                     Some(self.sf.get_mask())
                 }
             })
