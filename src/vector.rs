@@ -31,7 +31,7 @@ use num::Unsigned;
 use scroll::{ctx, Endian, Pread, Pwrite, LE};
 
 use crate::error::CodingError;
-use crate::filter::{EqualsSink, SectFilterSink, VectorFilter, count_hits};
+use crate::filter::{SectFilterSink, VectorFilter};
 use crate::section::*;
 use crate::sink::*;
 
@@ -475,166 +475,173 @@ impl<'buf, T: VectBase> Iterator for VectorItemIter<'buf, T> {
     }
 }
 
-#[test]
-fn test_append_u64_nonulls() {
-    // Make sure the fixed sect stats above can still fit in total headers
-    assert!(std::mem::size_of::<FixedSectStats>() + BINARYVECT_HEADER_SIZE <= NUM_HEADER_BYTES_TOTAL);
+#[cfg(test)]
+mod test {
+    use super::*;
+    use crate::filter::{EqualsSink, count_hits};
 
-    // Append more than 256 values, see if we get two sections and the right data back
-    let num_values: usize = 500;
-    let data: Vec<u64> = (0..num_values as u64).collect();
+    #[test]
+    fn test_append_u64_nonulls() {
+        // Make sure the fixed sect stats above can still fit in total headers
+        assert!(std::mem::size_of::<FixedSectStats>() + BINARYVECT_HEADER_SIZE <= NUM_HEADER_BYTES_TOTAL);
 
-    let mut appender = VectorU64Appender::new(1024).unwrap();
-    {
+        // Append more than 256 values, see if we get two sections and the right data back
+        let num_values: usize = 500;
+        let data: Vec<u64> = (0..num_values as u64).collect();
+
+        let mut appender = VectorU64Appender::new(1024).unwrap();
+        {
+            let reader = appender.reader();
+
+            assert_eq!(reader.num_elements(), 0);
+            assert_eq!(reader.sect_iter().count(), 0);
+        // Note: due to Rust borrowing rules we can only have reader as long as we are not appending.
+        }
+
+        // Now append the data
+        data.iter().for_each(|&e| appender.append(e).unwrap());
+
+        // At this point only 1 section has been written, the vector is not finished yet.
         let reader = appender.reader();
+        assert_eq!(reader.num_elements(), 256);
+        assert_eq!(reader.sect_iter().count(), 1);
 
-        assert_eq!(reader.num_elements(), 0);
-        assert_eq!(reader.sect_iter().count(), 0);
-    // Note: due to Rust borrowing rules we can only have reader as long as we are not appending.
+        let finished_vec = appender.finish(num_values).unwrap();
+
+        let reader = VectorReader::try_new(&finished_vec[..]).unwrap();
+        assert_eq!(reader.num_elements(), num_values);
+        assert_eq!(reader.sect_iter().count(), 2);
+        assert_eq!(reader.num_null_sections(), 0);
+
+        let elems: Vec<u64> = reader.iterate().collect();
+        assert_eq!(elems, data);
     }
 
-    // Now append the data
-    data.iter().for_each(|&e| appender.append(e).unwrap());
+    #[test]
+    fn test_append_u64_mixed_nulls() {
+        // Have some values, then append a large number of nulls
+        // (enough to pack rest of section, plus a null section, plus more in next section)
+        // Thus sections should be: Sect1: 100 values + 156 nulls
+        //    Sect2: null section
+        //    Sect3: 50 nulls + 50 more values
+        let data1: Vec<u64> = (0..100).collect();
+        let num_nulls = (256 - data1.len()) + 256 + 50;
+        let data2: Vec<u64> = (0..50).collect();
 
-    // At this point only 1 section has been written, the vector is not finished yet.
-    let reader = appender.reader();
-    assert_eq!(reader.num_elements(), 256);
-    assert_eq!(reader.sect_iter().count(), 1);
+        let total_elems = data1.len() + data2.len() + num_nulls;
 
-    let finished_vec = appender.finish(num_values).unwrap();
+        let mut all_data = Vec::<u64>::with_capacity(total_elems);
+        all_data.extend_from_slice(&data1[..]);
+        (0..num_nulls).for_each(|_i| all_data.push(0));
+        all_data.extend_from_slice(&data2[..]);
 
-    let reader = VectorReader::try_new(&finished_vec[..]).unwrap();
-    assert_eq!(reader.num_elements(), num_values);
-    assert_eq!(reader.sect_iter().count(), 2);
-    assert_eq!(reader.num_null_sections(), 0);
+        let mut appender = VectorU64Appender::new(1024).unwrap();
+        data1.iter().for_each(|&e| appender.append(e).unwrap());
+        appender.append_nulls(num_nulls).unwrap();
+        data2.iter().for_each(|&e| appender.append(e).unwrap());
 
-    let elems: Vec<u64> = reader.iterate().collect();
-    assert_eq!(elems, data);
-}
+        let finished_vec = appender.finish(total_elems).unwrap();
 
-#[test]
-fn test_append_u64_mixed_nulls() {
-    // Have some values, then append a large number of nulls
-    // (enough to pack rest of section, plus a null section, plus more in next section)
-    // Thus sections should be: Sect1: 100 values + 156 nulls
-    //    Sect2: null section
-    //    Sect3: 50 nulls + 50 more values
-    let data1: Vec<u64> = (0..100).collect();
-    let num_nulls = (256 - data1.len()) + 256 + 50;
-    let data2: Vec<u64> = (0..50).collect();
+        let reader = VectorReader::try_new(&finished_vec[..]).unwrap();
+        assert_eq!(reader.num_elements(), total_elems);
+        assert_eq!(reader.sect_iter().count(), 3);
+        assert_eq!(reader.num_null_sections(), 1);
 
-    let total_elems = data1.len() + data2.len() + num_nulls;
+        assert_eq!(reader.get_stats().num_null_sections, 1);
 
-    let mut all_data = Vec::<u64>::with_capacity(total_elems);
-    all_data.extend_from_slice(&data1[..]);
-    (0..num_nulls).for_each(|_i| all_data.push(0));
-    all_data.extend_from_slice(&data2[..]);
-
-    let mut appender = VectorU64Appender::new(1024).unwrap();
-    data1.iter().for_each(|&e| appender.append(e).unwrap());
-    appender.append_nulls(num_nulls).unwrap();
-    data2.iter().for_each(|&e| appender.append(e).unwrap());
-
-    let finished_vec = appender.finish(total_elems).unwrap();
-
-    let reader = VectorReader::try_new(&finished_vec[..]).unwrap();
-    assert_eq!(reader.num_elements(), total_elems);
-    assert_eq!(reader.sect_iter().count(), 3);
-    assert_eq!(reader.num_null_sections(), 1);
-
-    assert_eq!(reader.get_stats().num_null_sections, 1);
-
-    let elems: Vec<u64> = reader.iterate().collect();
-    assert_eq!(elems, all_data);
-}
-
-#[test]
-fn test_append_u64_mixed_nulls_grow() {
-    // Same as last test but use smaller buffer to force growing of encoding buffer
-    let data1: Vec<u64> = (0..300).collect();
-    let num_nulls = 350;
-
-    let total_elems = (data1.len() + num_nulls) * 2;
-
-    let mut all_data = Vec::<u64>::with_capacity(total_elems);
-    all_data.extend_from_slice(&data1[..]);
-    (0..num_nulls).for_each(|_i| all_data.push(0));
-    all_data.extend_from_slice(&data1[..]);
-    (0..num_nulls).for_each(|_i| all_data.push(0));
-
-    let mut appender = VectorU64Appender::new(300).unwrap();
-    data1.iter().for_each(|&e| appender.append(e).unwrap());
-    appender.append_nulls(num_nulls).unwrap();
-    data1.iter().for_each(|&e| appender.append(e).unwrap());
-    appender.append_nulls(num_nulls).unwrap();
-
-    let finished_vec = appender.finish(total_elems).unwrap();
-
-    let reader = VectorReader::try_new(&finished_vec[..]).unwrap();
-    assert_eq!(reader.num_elements(), total_elems);
-    assert_eq!(reader.sect_iter().count(), 6);
-    assert_eq!(reader.num_null_sections(), 1);
-
-    let elems: Vec<u64> = reader.iterate().collect();
-    assert_eq!(elems, all_data);
-}
-
-#[test]
-fn test_append_u32_and_filter() {
-    // First test appending with no nulls.  Just 1,2,3,4 and filter for 3, should get 1/4 of appended elements
-    let vector_size = 400;
-    let mut appender = VectorU32Appender::new(1024).unwrap();
-    for i in 0..vector_size {
-        appender.append((i % 4) + 1).unwrap();
+        let elems: Vec<u64> = reader.iterate().collect();
+        assert_eq!(elems, all_data);
     }
-    let finished_vec = appender.finish(vector_size as usize).unwrap();
 
-    let reader = VectorReader::<u32>::try_new(&finished_vec[..]).unwrap();
-    assert_eq!(reader.num_elements(), vector_size as usize);
-    assert_eq!(reader.sect_iter().count(), 2);
+    #[test]
+    fn test_append_u64_mixed_nulls_grow() {
+        // Same as last test but use smaller buffer to force growing of encoding buffer
+        let data1: Vec<u64> = (0..300).collect();
+        let num_nulls = 350;
 
-    let filter_iter = reader.filter_iter(EqualsSink::<u32>::new(&3));
-    let count = count_hits(filter_iter) as u32;
-    assert_eq!(count, vector_size / 4);
+        let total_elems = (data1.len() + num_nulls) * 2;
 
-    // Test appending with stretches of nulls.  300, then 400 nulls, then 300 elements again
-    let nonnulls = 300;
-    let total_elems = nonnulls * 2 + 400;
-    for i in 0..nonnulls {
-        appender.append((i % 4) + 1).unwrap();
+        let mut all_data = Vec::<u64>::with_capacity(total_elems);
+        all_data.extend_from_slice(&data1[..]);
+        (0..num_nulls).for_each(|_i| all_data.push(0));
+        all_data.extend_from_slice(&data1[..]);
+        (0..num_nulls).for_each(|_i| all_data.push(0));
+
+        let mut appender = VectorU64Appender::new(300).unwrap();
+        data1.iter().for_each(|&e| appender.append(e).unwrap());
+        appender.append_nulls(num_nulls).unwrap();
+        data1.iter().for_each(|&e| appender.append(e).unwrap());
+        appender.append_nulls(num_nulls).unwrap();
+
+        let finished_vec = appender.finish(total_elems).unwrap();
+
+        let reader = VectorReader::try_new(&finished_vec[..]).unwrap();
+        assert_eq!(reader.num_elements(), total_elems);
+        assert_eq!(reader.sect_iter().count(), 6);
+        assert_eq!(reader.num_null_sections(), 1);
+
+        let elems: Vec<u64> = reader.iterate().collect();
+        assert_eq!(elems, all_data);
     }
-    appender.append_nulls(400).unwrap();
-    for i in 0..nonnulls {
-        appender.append((i % 4) + 1).unwrap();
+
+    #[test]
+    fn test_append_u32_and_filter() {
+        // First test appending with no nulls.  Just 1,2,3,4 and filter for 3, should get 1/4 of appended elements
+        let vector_size = 400;
+        let mut appender = VectorU32Appender::new(1024).unwrap();
+        for i in 0..vector_size {
+            appender.append((i % 4) + 1).unwrap();
+        }
+        let finished_vec = appender.finish(vector_size as usize).unwrap();
+
+        let reader = VectorReader::<u32>::try_new(&finished_vec[..]).unwrap();
+        assert_eq!(reader.num_elements(), vector_size as usize);
+        assert_eq!(reader.sect_iter().count(), 2);
+
+        let filter_iter = reader.filter_iter(EqualsSink::<u32>::new(&3));
+        let count = count_hits(filter_iter) as u32;
+        assert_eq!(count, vector_size / 4);
+
+        // Test appending with stretches of nulls.  300, then 400 nulls, then 300 elements again
+        let nonnulls = 300;
+        let total_elems = nonnulls * 2 + 400;
+        for i in 0..nonnulls {
+            appender.append((i % 4) + 1).unwrap();
+        }
+        appender.append_nulls(400).unwrap();
+        for i in 0..nonnulls {
+            appender.append((i % 4) + 1).unwrap();
+        }
+        let finished_vec = appender.finish(total_elems as usize).unwrap();
+
+        let reader = VectorReader::<u32>::try_new(&finished_vec[..]).unwrap();
+        assert_eq!(reader.num_elements(), total_elems as usize);
+
+        let filter_iter = reader.filter_iter(EqualsSink::<u32>::new(&3));
+        let count = count_hits(filter_iter) as u32;
+        assert_eq!(count, nonnulls * 2 / 4);
+
+        // Iterate and decode_to_sink to VecSink should produce same values... except for trailing zeroes
+        let mut sink = VecSink::<u32>::new();
+        reader.decode_to_sink(&mut sink).unwrap();
+        let it_data: Vec<u32> = reader.iterate().collect();
+        assert_eq!(sink.vec[..total_elems as usize], it_data[..]);
     }
-    let finished_vec = appender.finish(total_elems as usize).unwrap();
 
-    let reader = VectorReader::<u32>::try_new(&finished_vec[..]).unwrap();
-    assert_eq!(reader.num_elements(), total_elems as usize);
+    #[test]
+    fn test_append_u32_large_vector() {
+        // 9999 nulls, then an item, 10 times = 100k items total
+        let mut appender = VectorU32Appender::new(4096).unwrap();
+        let vector_size = 100000;
+        for _ in 0..10 {
+            appender.append_nulls(9999).unwrap();
+            appender.append(2).unwrap();
+        }
+        assert_eq!(appender.num_elements(), vector_size);
 
-    let filter_iter = reader.filter_iter(EqualsSink::<u32>::new(&3));
-    let count = count_hits(filter_iter) as u32;
-    assert_eq!(count, nonnulls * 2 / 4);
-
-    // Iterate and decode_to_sink to VecSink should produce same values... except for trailing zeroes
-    let mut sink = VecSink::<u32>::new();
-    reader.decode_to_sink(&mut sink).unwrap();
-    let it_data: Vec<u32> = reader.iterate().collect();
-    assert_eq!(sink.vec[..total_elems as usize], it_data[..]);
+        let finished_vec = appender.finish(vector_size).unwrap();
+        let reader = VectorReader::<u32>::try_new(&finished_vec[..]).unwrap();
+        assert_eq!(reader.num_elements(), vector_size as usize);
+    }
 }
 
-#[test]
-fn test_append_u32_large_vector() {
-    // 9999 nulls, then an item, 10 times = 100k items total
-    let mut appender = VectorU32Appender::new(4096).unwrap();
-    let vector_size = 100000;
-    for _ in 0..10 {
-        appender.append_nulls(9999).unwrap();
-        appender.append(2).unwrap();
-    }
-    assert_eq!(appender.num_elements(), vector_size);
-
-    let finished_vec = appender.finish(vector_size).unwrap();
-    let reader = VectorReader::<u32>::try_new(&finished_vec[..]).unwrap();
-    assert_eq!(reader.num_elements(), vector_size as usize);
-}

@@ -7,7 +7,7 @@
 use core::marker::PhantomData;
 
 use packed_simd::u32x8;
-use smallvec::{SmallVec, smallvec};
+use smallvec::SmallVec;
 
 use crate::section::*;
 use crate::sink::{Sink, SinkInput};
@@ -319,47 +319,53 @@ where I: Iterator<Item = u32x8> {
     matches
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-use crate::vector::{VectorU32Appender, VectorU64Appender, VectorReader};
+    use smallvec::smallvec;
+    use crate::filter::match_positions;
+    use crate::vector::{VectorU32Appender, VectorU64Appender, VectorReader};
 
-#[test]
-fn test_filter_u64_equals() {
-    let vector_size: usize = 400;
-    let mut appender = VectorU64Appender::new(1024).unwrap();
-    for i in 0..vector_size {
-        appender.append((i as u64 % 4) + 1).unwrap();
+    #[test]
+    fn test_filter_u64_equals() {
+        let vector_size: usize = 400;
+        let mut appender = VectorU64Appender::new(1024).unwrap();
+        for i in 0..vector_size {
+            appender.append((i as u64 % 4) + 1).unwrap();
+        }
+        let finished_vec = appender.finish(vector_size).unwrap();
+
+        let reader = VectorReader::<u64>::try_new(&finished_vec[..]).unwrap();
+        let filter_iter = reader.filter_iter(EqualsSink::<u64>::new(&3));
+        let matches = match_positions(filter_iter);
+        assert_eq!(matches.len(), vector_size / 4);
+
+        // 1, 2, 3... so match for 3 starts at position 2
+        let expected_pos: Vec<_> = (2..vector_size).step_by(4).collect();
+        assert_eq!(matches, expected_pos);
     }
-    let finished_vec = appender.finish(vector_size).unwrap();
 
-    let reader = VectorReader::<u64>::try_new(&finished_vec[..]).unwrap();
-    let filter_iter = reader.filter_iter(EqualsSink::<u64>::new(&3));
-    let matches = match_positions(filter_iter);
-    assert_eq!(matches.len(), vector_size / 4);
+    #[test]
+    fn test_filter_u32_oneof() {
+        let vector_size: usize = 400;
+        let mut appender = VectorU32Appender::new(1024).unwrap();
+        for i in 0..vector_size {
+            appender.append((i as u32 % 12) + 1).unwrap();
+        }
+        let finished_vec = appender.finish(vector_size).unwrap();
 
-    // 1, 2, 3... so match for 3 starts at position 2
-    let expected_pos: Vec<_> = (2..vector_size).step_by(4).collect();
-    assert_eq!(matches, expected_pos);
-}
+        let reader = VectorReader::<u32>::try_new(&finished_vec[..]).unwrap();
+        let filter_iter = reader.filter_iter(OneOfSink::<u32>::new(&smallvec![3, 5]));
+        let matches = match_positions(filter_iter);
 
-#[test]
-fn test_filter_u32_oneof() {
-    let vector_size: usize = 400;
-    let mut appender = VectorU32Appender::new(1024).unwrap();
-    for i in 0..vector_size {
-        appender.append((i as u32 % 12) + 1).unwrap();
+        // 3 and 5 are 1/6th of 12 values.  400/6=66 but 400%12=4, so the 3 is last value matched again
+        assert_eq!(matches.len(), 67);
+
+        // 3, 5 are positions 2, 4..... etc.
+        let mut expected_pos: Vec<_> = (2..vector_size).step_by(12).map(|i| vec![i, i+2]).flatten().collect();
+        // have to trim last item
+        expected_pos.resize(67, 0);
+        assert_eq!(matches, expected_pos);
     }
-    let finished_vec = appender.finish(vector_size).unwrap();
-
-    let reader = VectorReader::<u32>::try_new(&finished_vec[..]).unwrap();
-    let filter_iter = reader.filter_iter(OneOfSink::<u32>::new(&smallvec![3, 5]));
-    let matches = match_positions(filter_iter);
-
-    // 3 and 5 are 1/6th of 12 values.  400/6=66 but 400%12=4, so the 3 is last value matched again
-    assert_eq!(matches.len(), 67);
-
-    // 3, 5 are positions 2, 4..... etc.
-    let mut expected_pos: Vec<_> = (2..vector_size).step_by(12).map(|i| vec![i, i+2]).flatten().collect();
-    // have to trim last item
-    expected_pos.resize(67, 0);
-    assert_eq!(matches, expected_pos);
 }

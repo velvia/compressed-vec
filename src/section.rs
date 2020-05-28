@@ -541,99 +541,104 @@ pub fn unpack_u32_section(buf: &[u8]) -> [u32; 256] {
 }
 
 
-#[test]
-fn test_sectwriter_cannot_add_sect_header() {
-    let mut buf = [0u8; 4];   // Too small to write a section header in!!
-    let mut writer = SectionWriter::new(&mut buf, 256);
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-    let res = writer.add_64kb(SectionType::Null, |writebuf: &mut [u8], _| {
-        if writebuf.len() < 8 { Err(CodingError::NotEnoughSpace) }
-        else {
-            for n in 0..8 { writebuf[n] = 0xff; }
-            Ok((8, 8))
-        }
-    });
+    #[test]
+    fn test_sectwriter_cannot_add_sect_header() {
+        let mut buf = [0u8; 4];   // Too small to write a section header in!!
+        let mut writer = SectionWriter::new(&mut buf, 256);
 
-    assert!(res.is_err());
-}
+        let res = writer.add_64kb(SectionType::Null, |writebuf: &mut [u8], _| {
+            if writebuf.len() < 8 { Err(CodingError::NotEnoughSpace) }
+            else {
+                for n in 0..8 { writebuf[n] = 0xff; }
+                Ok((8, 8))
+            }
+        });
 
-#[test]
-fn test_sectwriter_fill_section_normal() {
-    let mut buf = [0u8; 20];
-    let mut writer = SectionWriter::new(&mut buf, 256);
-
-    let res = writer.add_64kb(SectionType::Null, |writebuf: &mut [u8], _| {
-        if writebuf.len() < 8 { Err(CodingError::NotEnoughSpace) }
-        else {
-            for n in 0..8 { writebuf[n] = 0xff; }
-            Ok((8, 8))
-        }
-    });
-
-    assert_eq!(res, Ok((8, 8)));
-    assert_eq!(writer.cur_pos(), 13);
-}
-
-#[test]
-fn test_npu64med_write_error_no_room() {
-    // Allocate a buffer that's not large enough - first, no room for header
-    let mut buf = [0u8; 2];  // header needs 3 bytes at least
-    let data: Vec<u64> = (0..256).collect();
-
-    let res = NibblePackU64MedFixedSect::write(&mut buf, 0, &data[..]);
-    assert_eq!(res, Err(CodingError::NotEnoughSpace));
-
-    // No room for all values
-    let mut buf = [0u8; 100];  // Need ~312 bytes to NibblePack compress the inputs above
-
-    let res = NibblePackU64MedFixedSect::write(&mut buf, 0, &data[..]);
-    assert_eq!(res, Err(CodingError::NotEnoughSpace));
-}
-
-#[test]
-fn test_fixedsectiterator_write_and_read() {
-    let mut buf = [0u8; 1024];
-    let data: Vec<u64> = (0..256).collect();
-    let mut off = 0;
-
-    off = NullFixedSect::write(&mut buf, off).unwrap();
-    assert_eq!(off, 1);
-
-    off = NibblePackU64MedFixedSect::write(&mut buf, off, &data[..]).unwrap();
-
-    // Now, create an iterator and collect enums.  Send only the slice of written data, no more.
-    let sect_iter = FixedSectIterator::new(&buf[0..off]);
-    let sections = sect_iter.collect::<Vec<FixedSectEnum>>();
-
-    assert_eq!(sections.len(), 2);
-    let sect = &sections[0];
-    assert_eq!(sect.num_bytes(), 1);
-    match sect {
-        FixedSectEnum::NullFixedSect(..) => {},
-        _ => panic!("Got the wrong sect: {:?}", sect),
+        assert!(res.is_err());
     }
 
-    let sect = &sections[1];
-    assert!(sect.num_bytes() <= sect.sect_bytes().unwrap().len());
-    if let FixedSectEnum::NibblePackU64MedFixedSect(inner_sect) = sect {
-        let mut sink = U64_256Sink::new();
-        inner_sect.decode_to_sink(&mut sink).unwrap();
-        assert_eq!(sink.values[..data.len()], data[..]);
-    } else {
-        panic!("Wrong type obtained at sections[1]")
+    #[test]
+    fn test_sectwriter_fill_section_normal() {
+        let mut buf = [0u8; 20];
+        let mut writer = SectionWriter::new(&mut buf, 256);
+
+        let res = writer.add_64kb(SectionType::Null, |writebuf: &mut [u8], _| {
+            if writebuf.len() < 8 { Err(CodingError::NotEnoughSpace) }
+            else {
+                for n in 0..8 { writebuf[n] = 0xff; }
+                Ok((8, 8))
+            }
+        });
+
+        assert_eq!(res, Ok((8, 8)));
+        assert_eq!(writer.cur_pos(), 13);
     }
-}
 
-#[test]
-fn test_fixedsect_u32_write_and_decode() {
-    let mut buf = [0u8; 1024];
-    let data: Vec<u32> = (0..256).collect();
-    let mut off = 0;
+    #[test]
+    fn test_npu64med_write_error_no_room() {
+        // Allocate a buffer that's not large enough - first, no room for header
+        let mut buf = [0u8; 2];  // header needs 3 bytes at least
+        let data: Vec<u64> = (0..256).collect();
 
-    off = NibblePackU32MedFixedSect::write(&mut buf, off, &data[..]).unwrap();
+        let res = NibblePackU64MedFixedSect::write(&mut buf, 0, &data[..]);
+        assert_eq!(res, Err(CodingError::NotEnoughSpace));
 
-    let values = unpack_u32_section(&buf[..off]);
-    assert_eq!(values.iter().count(), 256);
-    assert_eq!(values.iter().map(|&x| x).collect::<Vec<u32>>(), data);
+        // No room for all values
+        let mut buf = [0u8; 100];  // Need ~312 bytes to NibblePack compress the inputs above
+
+        let res = NibblePackU64MedFixedSect::write(&mut buf, 0, &data[..]);
+        assert_eq!(res, Err(CodingError::NotEnoughSpace));
+    }
+
+    #[test]
+    fn test_fixedsectiterator_write_and_read() {
+        let mut buf = [0u8; 1024];
+        let data: Vec<u64> = (0..256).collect();
+        let mut off = 0;
+
+        off = NullFixedSect::write(&mut buf, off).unwrap();
+        assert_eq!(off, 1);
+
+        off = NibblePackU64MedFixedSect::write(&mut buf, off, &data[..]).unwrap();
+
+        // Now, create an iterator and collect enums.  Send only the slice of written data, no more.
+        let sect_iter = FixedSectIterator::new(&buf[0..off]);
+        let sections = sect_iter.collect::<Vec<FixedSectEnum>>();
+
+        assert_eq!(sections.len(), 2);
+        let sect = &sections[0];
+        assert_eq!(sect.num_bytes(), 1);
+        match sect {
+            FixedSectEnum::NullFixedSect(..) => {},
+            _ => panic!("Got the wrong sect: {:?}", sect),
+        }
+
+        let sect = &sections[1];
+        assert!(sect.num_bytes() <= sect.sect_bytes().unwrap().len());
+        if let FixedSectEnum::NibblePackU64MedFixedSect(inner_sect) = sect {
+            let mut sink = U64_256Sink::new();
+            inner_sect.decode_to_sink(&mut sink).unwrap();
+            assert_eq!(sink.values[..data.len()], data[..]);
+        } else {
+            panic!("Wrong type obtained at sections[1]")
+        }
+    }
+
+    #[test]
+    fn test_fixedsect_u32_write_and_decode() {
+        let mut buf = [0u8; 1024];
+        let data: Vec<u32> = (0..256).collect();
+        let mut off = 0;
+
+        off = NibblePackU32MedFixedSect::write(&mut buf, off, &data[..]).unwrap();
+
+        let values = unpack_u32_section(&buf[..off]);
+        assert_eq!(values.iter().count(), 256);
+        assert_eq!(values.iter().map(|&x| x).collect::<Vec<u32>>(), data);
+    }
 }
 
