@@ -7,6 +7,7 @@
 use core::marker::PhantomData;
 
 use packed_simd::u32x8;
+use smallvec::{SmallVec, smallvec};
 
 use crate::section::*;
 use crate::sink::{Sink, SinkInput};
@@ -144,15 +145,16 @@ pub struct MembershipPredicate<T: VectBase> {
 }
 
 impl<T: VectBase> Predicate<T> for MembershipPredicate<T> {
-    type Input = Vec<T>;  // TODO: switch to smallvec to avoid allocations for small card?
+    // Up to 4 items in the set, heap allocation not needed
+    type Input = SmallVec<[T; 4]>;
     #[inline]
-    fn pred_matches_zero(input: &Vec<T>) -> bool {
+    fn pred_matches_zero(input: &Self::Input) -> bool {
         // If any member of set is 0, then pred can match 0
         input.iter().any(|x| x.is_zero())
     }
 
     #[inline]
-    fn from_input(input: &Vec<T>) -> Self {
+    fn from_input(input: &Self::Input) -> Self {
         Self { set: input.iter().map(|&item| T::SI::splat(item)).collect() }
     }
 }
@@ -349,7 +351,7 @@ fn test_filter_u32_oneof() {
     let finished_vec = appender.finish(vector_size).unwrap();
 
     let reader = VectorReader::<u32>::try_new(&finished_vec[..]).unwrap();
-    let filter_iter = reader.filter_iter(OneOfSink::<u32>::new(&vec![3, 5]));
+    let filter_iter = reader.filter_iter(OneOfSink::<u32>::new(&smallvec![3, 5]));
     let matches = match_positions(filter_iter);
 
     // 3 and 5 are 1/6th of 12 values.  400/6=66 but 400%12=4, so the 3 is last value matched again
