@@ -1,3 +1,4 @@
+use packed_simd::u64x8;
 use plain::Plain;
 use crate::nibblepacking::*;
 use crate::sink::Sink;
@@ -124,23 +125,27 @@ impl<'a> DeltaDiffPackSink<'a> {
     }
 }
 
-impl<'a> Sink<[u64; 8]> for DeltaDiffPackSink<'a> {
+impl<'a> Sink<u64x8> for DeltaDiffPackSink<'a> {
     #[inline]
-    fn process(&mut self, data: [u64; 8]) {
+    fn process(&mut self, data: u64x8) {
         let maxlen = self.last_hist_deltas.len();
         let looplen = if self.i + 8 <= maxlen { 8 } else { maxlen - self.i };
         for n in 0..looplen {
             let last_value = self.last_hist_deltas[self.i + n];
             // If data dropped from last, write data instead of diff
-            if data[n] < last_value {
+            // TODO: actually try to use the SIMD
+            let data_item = data.extract(n);
+            if data_item < last_value {
                 self.value_dropped = true;
-                self.pack_array[n] = data[n];
+                self.pack_array[n] = data_item;
             } else {
-                self.pack_array[n] = data[n] - last_value;
+                self.pack_array[n] = data_item - last_value;
             }
         }
         // copy data wholesale to last_hist_deltas
-        (&mut self.last_hist_deltas[self.i..(self.i+looplen)]).copy_from_slice(&data[0..looplen]);
+        for n in self.i..(self.i+looplen) {
+            self.last_hist_deltas[n] = data.extract(n - self.i);
+        }
         // if numElems < 8, zero out remainder of packArray
         for n in looplen..8 {
             self.pack_array[n] = 0;

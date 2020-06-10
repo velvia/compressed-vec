@@ -8,7 +8,7 @@
 use crate::section::VectBase;
 
 use num::Zero;
-use packed_simd::u32x8;
+use packed_simd::{u32x8, u64x8};
 
 /// An input to a sink.  Sinks take a type which represents 8 values of an int, such as [u64; 8].
 /// Item type represents the underlying type of each individual item in the 8 item SinkInput.
@@ -26,6 +26,7 @@ pub trait SinkInput: Copy {
     fn eq_mask(self, other: Self) -> u8;
 }
 
+// TODO: remove
 impl SinkInput for [u64; 8] {
     type Item = u64;
 
@@ -44,6 +45,23 @@ impl SinkInput for [u64; 8] {
             }
         }
         mask
+    }
+}
+
+impl SinkInput for u64x8 {
+    type Item = u64;
+
+    #[inline]
+    fn write_to_slice(&self, slice: &mut [Self::Item]) {
+        self.write_to_slice_unaligned(slice);
+    }
+
+    #[inline]
+    fn splat(item: u64) -> Self { u64x8::splat(item) }
+
+    #[inline]
+    fn eq_mask(self, other: Self) -> u8 {
+        self.eq(other).bitmask()
     }
 }
 

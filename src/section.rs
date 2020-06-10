@@ -18,7 +18,7 @@ use std::convert::TryFrom;
 use arrayref::array_ref;
 use enum_dispatch::enum_dispatch;
 use num::Zero;
-use packed_simd::u32x8;
+use packed_simd::{u32x8, u64x8};
 use scroll::{ctx, Endian, Pread, Pwrite, LE};
 
 
@@ -307,7 +307,7 @@ impl<'buf> EnumToFSReader<u32> for ETFSR {
 impl<'buf> EnumToFSReader<u64> for ETFSR {
     #[inline]
     fn decode_to_sink<Output>(e: FixedSectEnum, output: &mut Output) -> Result<(), CodingError>
-        where Output: Sink<[u64; 8]> {
+        where Output: Sink<u64x8> {
         match e {
             FixedSectEnum::NullFixedSect(nfs) => FixedSectReader::<u64>::decode_to_sink(&nfs, output),
             FixedSectEnum::NibblePackU64MedFixedSect(fs) => fs.decode_to_sink(output),
@@ -334,7 +334,7 @@ impl VectBase for u32 {
 }
 
 impl VectBase for u64 {
-    type SI = [u64; 8];
+    type SI = u64x8;
     type Mapper = ETFSR;
 }
 
@@ -407,7 +407,7 @@ impl<'buf> NibblePackU64MedFixedSect<'buf> {
 impl<'buf> FixedSectReader<u64> for NibblePackU64MedFixedSect<'buf> {
     #[inline]
     fn decode_to_sink<Output>(&self, output: &mut Output) -> Result<(), CodingError>
-        where Output: Sink<[u64; 8]> {
+        where Output: Sink<u64x8> {
         let mut values_left = FIXED_LEN;
         let mut inbuf = &self.sect_bytes[3..];
         while values_left > 0 {

@@ -1,6 +1,4 @@
-#![allow(unused)] // needed for dbg!() macro, but folks say this should not be needed
-
-use packed_simd::u32x8;
+use packed_simd::{u32x8, u64x8, FromCast};
 
 use crate::error::CodingError;
 use crate::byteutils::*;
@@ -33,7 +31,7 @@ pub fn pack_f64_xor<I: Iterator<Item = f64>>(mut stream: I,
     let mut last: u64 = match stream.next() {
         Some(num) => {
             let num_bits = num.to_bits();
-            direct_write_uint_le(out_buffer, 0, num_bits, 8);
+            direct_write_uint_le(out_buffer, 0, num_bits, 8)?;
             num_bits
         },
         None      => return Err(CodingError::InputTooShort)
@@ -177,7 +175,7 @@ fn pack_to_even_nibbles(
 
     // for each nonzero input, shift and write out exact # of bytes
     for &x in inputs {
-        if (x != 0) {
+        if x != 0 {
             off = direct_write_uint_le(out_buffer, off, x >> shift, num_bytes_each)?;
         }
     };
@@ -203,7 +201,7 @@ fn pack_universal(
     let mut off = offset;
 
     for &x in inputs {
-        if (x != 0) {
+        if x != 0 {
             let remaining = 64 - bit_cursor;
             let shifted_input = x >> trailing_shift;
 
@@ -234,7 +232,7 @@ fn pack_universal(
 }
 
 
-const ZERO_ELEMS: [u64; 8] = [0u64; 8];
+const ZERO_U64OCTET: u64x8 = u64x8::splat(0);
 
 /// A Sink which accumulates delta-encoded NibblePacked data back into increasing u64 numbers
 #[derive(Debug)]
@@ -257,14 +255,14 @@ impl DeltaSink {
     }
 }
 
-impl Sink<[u64; 8]> for DeltaSink {
+impl Sink<u64x8> for DeltaSink {
     #[inline]
-    fn process(&mut self, data: [u64; 8]) {
-        let mut buf = [0u64; 8];
+    fn process(&mut self, data: u64x8) {
+        let mut buf = u64x8::splat(0);
         let mut acc = self.acc;
         for i in 0..8 {
-            acc += data[i];
-            buf[i] = acc;
+            acc += data.extract(i);
+            buf = buf.replace(i, acc);
         }
         self.acc = acc;
         self.sink.process(buf);
@@ -301,14 +299,14 @@ impl DoubleXorSink {
     }
 }
 
-impl Sink<[u64; 8]> for DoubleXorSink {
+impl Sink<u64x8> for DoubleXorSink {
     #[inline]
-    fn process(&mut self, data: [u64; 8]) {
+    fn process(&mut self, data: u64x8) {
         let mut buf = [0f64; 8];
         let mut last = self.last;
         for i in 0..8 {
         // XOR new piece of data with last, which yields original value
-            let numbits = last ^ data[i];
+            let numbits = last ^ data.extract(i);
             buf[i] = f64::from_bits(numbits);
             last = numbits
         }
@@ -329,25 +327,21 @@ impl Sink<[u64; 8]> for DoubleXorSink {
 /// A sink that converts u32x8 output from SIMD 32-bit unpacker to 64-bit
 // TODO: figure out right place for this?
 #[derive(Debug)]
-struct U32ToU64Sink<'a, S: Sink<[u64; 8]>> {
+struct U32ToU64Sink<'a, S: Sink<u64x8>> {
     u64sink: &'a mut S
 }
 
-impl<'a, S: Sink<[u64; 8]>> U32ToU64Sink<'a, S> {
+impl<'a, S: Sink<u64x8>> U32ToU64Sink<'a, S> {
     #[inline]
     pub fn new(u64sink: &'a mut S) -> Self {
         Self { u64sink }
     }
 }
 
-impl<'a, S: Sink<[u64; 8]>> Sink<u32x8> for U32ToU64Sink<'a, S> {
+impl<'a, S: Sink<u64x8>> Sink<u32x8> for U32ToU64Sink<'a, S> {
     #[inline]
     fn process(&mut self, data: u32x8) {
-        let mut out = [0u64; 8];
-        for i in 0..8 {
-            out[i] = data.extract(i) as u64;
-        }
-        self.u64sink.process(out);
+        self.u64sink.process(u64x8::from_cast(data));
     }
 
     #[inline]
@@ -372,7 +366,7 @@ pub fn unpack<'a, Output>(
     output: &mut Output,
     num_values: usize,
 ) -> Result<&'a [u8], CodingError>
-where Output: Sink<[u64; 8]> {
+where Output: Sink<u64x8> {
     let mut values_left = num_values as isize;
     let mut inbuf = encoded;
     while values_left > 0 {
@@ -417,7 +411,7 @@ pub fn unpack_f64_xor<'a>(encoded: &'a [u8],
 //       annotations to help it determine to which input the output lifetime is related to, so Rust knows
 //       that the output of the slice will live as long as the reference to the input slice is valid.
 #[inline]
-pub fn nibble_unpack8<'a, Output: Sink<[u64; 8]>>(
+pub fn nibble_unpack8<'a, Output: Sink<u64x8>>(
     inbuf: &'a [u8],
     output: &mut Output,
 ) -> Result<&'a [u8], CodingError> {
@@ -425,7 +419,7 @@ pub fn nibble_unpack8<'a, Output: Sink<[u64; 8]>>(
     let nonzero_mask = inbuf[0];
     if nonzero_mask == 0 {
         // All 8 words are 0; skip further processing
-        output.process(ZERO_ELEMS);
+        output.process(ZERO_U64OCTET);
         Ok(&inbuf[1..])
     } else {
         if inbuf.len() < 2 { return Err(CodingError::NotEnoughSpace) }
@@ -474,8 +468,7 @@ pub fn nibble_unpack8<'a, Output: Sink<[u64; 8]>>(
                 bit_cursor = (bit_cursor + num_bits) % 64;
             }
         }
-        output.process(out_array);
-
+        output.process(u64x8::from_slice_unaligned(&out_array));
         // Return the "remaining slice" - the rest of input buffer after we've parsed our bytes.
         // This allows for easy and clean chaining of nibble_unpack8 calls with no mutable state
         Ok(&inbuf[(total_bytes as usize)..])
@@ -719,7 +712,7 @@ fn pack_unpack_f64_xor() {
     let written = pack_f64_xor(inputs.iter().cloned(), &mut buf).unwrap();
     println!("Packed {} f64 inputs (XOR) into {} bytes", inputs.len(), written);
 
-    let mut out = Vec::<f64>::with_capacity(64);
+    let out = Vec::<f64>::with_capacity(64);
     let mut sink = DoubleXorSink::new(out);
     let res = unpack_f64_xor(&buf[..written], &mut sink, inputs.len());
     assert_eq!(res.unwrap().len(), 0);
@@ -778,16 +771,16 @@ mod props {
             nibble_pack8(&input, &mut buf, 0).unwrap();
 
             let mut sink = VecSink::<u64>::new();
-            let res = nibble_unpack8(&buf[..], &mut sink);
+            let _res = nibble_unpack8(&buf[..], &mut sink);
             assert_eq!(sink.vec[..], input);
         }
 
         #[test]
         fn prop_delta_u64s_packing(input in arb_varlen_deltas()) {
             let mut buf = [0u8; 512];
-            pack_u64_delta(&input[..], &mut buf);
+            pack_u64_delta(&input[..], &mut buf).unwrap();
             let mut sink = DeltaSink::new();
-            let res = unpack(&buf, &mut sink, input.len());
+            let _res = unpack(&buf, &mut sink, input.len());
             assert_eq!(sink.sink.vec[..input.len()], input[..]);
         }
     }
