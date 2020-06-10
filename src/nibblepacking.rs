@@ -1,8 +1,11 @@
 #![allow(unused)] // needed for dbg!() macro, but folks say this should not be needed
 
+use packed_simd::u32x8;
+
 use crate::error::CodingError;
 use crate::byteutils::*;
 use crate::sink::*;
+use crate::nibblepack_simd::unpack8_u32_simd;
 
 /// Packs a slice of u64 numbers that are increasing, using delta encoding.  That is, the delta between successive
 /// elements is encoded, rather than the absolute numbers.  The first number is encoded as is.
@@ -321,7 +324,38 @@ impl Sink<[u64; 8]> for DoubleXorSink {
     fn reset(&mut self) {
         self.vec.clear();
     }
+}
 
+/// A sink that converts u32x8 output from SIMD 32-bit unpacker to 64-bit
+// TODO: figure out right place for this?
+#[derive(Debug)]
+struct U32ToU64Sink<'a, S: Sink<[u64; 8]>> {
+    u64sink: &'a mut S
+}
+
+impl<'a, S: Sink<[u64; 8]>> U32ToU64Sink<'a, S> {
+    #[inline]
+    pub fn new(u64sink: &'a mut S) -> Self {
+        Self { u64sink }
+    }
+}
+
+impl<'a, S: Sink<[u64; 8]>> Sink<u32x8> for U32ToU64Sink<'a, S> {
+    #[inline]
+    fn process(&mut self, data: u32x8) {
+        let mut out = [0u64; 8];
+        for i in 0..8 {
+            out[i] = data.extract(i) as u64;
+        }
+        self.u64sink.process(out);
+    }
+
+    #[inline]
+    fn process_zeroes(&mut self) {
+        self.u64sink.process_zeroes();
+    }
+
+    fn reset(&mut self) {}
 }
 
 /// Unpacks num_values values from an encoded buffer, by calling nibble_unpack8 enough times.
@@ -373,7 +407,8 @@ pub fn unpack_f64_xor<'a>(encoded: &'a [u8],
 
 /// Unpacks 8 u64's packed using nibble_pack8 by calling the output.process() method 8 times, once for each encoded
 /// value.  Always calls 8 times regardless of what is in the input, unless the input is too short.
-/// Returns "remainder" byteslice or unpacking error (say if one ran out of space)
+/// Returns "remainder" byteslice or unpacking error (say if one ran out of space).
+/// Uses the SIMD U32 unpack func if possible to speed things up
 ///
 /// # Arguments
 /// * `inbuf` - NibblePacked compressed byte slice containing "remaining" bytes, starting with bitmask byte
@@ -396,6 +431,14 @@ pub fn nibble_unpack8<'a, Output: Sink<[u64; 8]>>(
         if inbuf.len() < 2 { return Err(CodingError::NotEnoughSpace) }
         let num_bits = ((inbuf[1] >> 4) + 1) * 4;
         let trailing_zeros = (inbuf[1] & 0x0f) * 4;
+
+        // Use SIMD u32 unpacker if total resulting bits is <= 32
+        // Improves filtering throughput about 2x
+        if (num_bits + trailing_zeros) <= 32 {
+            let mut wrapper_sink = U32ToU64Sink::new(output);
+            return unpack8_u32_simd(inbuf, &mut wrapper_sink);
+        }
+
         let total_bytes = 2 + (num_bits as u32 * nonzero_mask.count_ones() + 7) / 8;
         let mask: u64 = if num_bits >= 64 { std::u64::MAX } else { (1u64 << num_bits) - 1u64 };
         let mut bit_cursor = 0;

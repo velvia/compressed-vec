@@ -80,7 +80,7 @@ fn pack_delta_u64s_varlen(c: &mut Criterion) {
 
 fn unpack_delta_u64s(c: &mut Criterion) {
     c.bench_function("unpack delta u64s", |b| {
-        let inputs = increasing_nonzeroes_u64x64(16);
+        let inputs = increasing_nonzeroes_u64x64(24);
         let mut buf = [0u8; 1024];
         nibblepacking::pack_u64_delta(&inputs, &mut buf).unwrap();
 
@@ -137,6 +137,13 @@ fn dense_lowcard_vector() -> Vec<u8> {
     appender.finish(VECTOR_LENGTH).unwrap()
 }
 
+fn dense_lowcard_u64_vector() -> Vec<u8> {
+    let inputs = sinewave_varnonzeros_u32(1.0, VECTOR_LENGTH);
+    let mut appender = vector::VectorU64Appender::new(8192).unwrap();
+    inputs.iter().for_each(|&a| appender.append(a as u64).unwrap());
+    appender.finish(VECTOR_LENGTH).unwrap()
+}
+
 fn sparse_lowcard_vector(num_nonzeroes: usize) -> Vec<u8> {
     let nonzeroes = sinewave_varnonzeros_u32(1.0, num_nonzeroes/2);
     let nulls = VECTOR_LENGTH - num_nonzeroes;
@@ -182,6 +189,21 @@ fn bench_filter_vect(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_filter_u64_vect(c: &mut Criterion) {
+    let mut group = c.benchmark_group("u64 vector filtering");
+    group.throughput(Throughput::Elements(VECTOR_LENGTH as u64));
+
+    let dense_vect = dense_lowcard_u64_vector();
+    let dense_reader = vector::VectorReader::<u64>::try_new(&dense_vect[..]).unwrap();
+
+    group.bench_function("lowcard", |b| b.iter(|| {
+        let filter_iter = dense_reader.filter_iter(filter::EqualsSink::<u64>::new(&3));
+        filter::count_hits(filter_iter);
+    }));
+
+    group.finish();
+}
+
 const BATCH_SIZE: usize = 100;
 
 fn repack_2d_deltas(c: &mut Criterion) {
@@ -221,6 +243,7 @@ criterion_group!(benches, //nibblepack8_varlen,
                           section32_decode_dense_lowcard_varnonzeroes,
                           section32_decode_dense_varnumbits,
                           bench_filter_vect,
+                          bench_filter_u64_vect,
                           // repack_2d_deltas,
                           );
 criterion_main!(benches);
