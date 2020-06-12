@@ -217,7 +217,8 @@ where T: VectBase,
     #[inline]
     fn next(&mut self) -> Option<u32x8> {
         self.sect_iter.next()
-            .and_then(|sect| {
+            .and_then(|res| {
+                let sect = res.expect("This should not fail!");
                 if sect.is_null() {
                     Some(self.sf.null_mask())
                 } else {

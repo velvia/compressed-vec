@@ -390,8 +390,13 @@ impl<'buf, T: VectBase> VectorReader<'buf, T> {
 
     /// Iterates and discovers the number of null sections.  O(num_sections).  It will be faster to just use
     /// get_stats().
-    pub fn num_null_sections(&self) -> usize {
-        self.sect_iter().filter(|sect| sect.is_null()).count()
+    pub fn num_null_sections(&self) -> Result<usize, CodingError> {
+        let mut count = 0;
+        for sect_res in self.sect_iter() {
+            let sect = sect_res?;
+            if sect.is_null() { count += 1 }
+        }
+        Ok(count)
     }
 
     /// Returns a FixedSectStats extracted from the vector header.
@@ -419,7 +424,7 @@ impl<'buf, T: VectBase> VectorReader<'buf, T> {
     pub fn decode_to_sink<Output>(&self, output: &mut Output) -> Result<(), CodingError>
     where Output: Sink<T::SI> {
         for sect in self.sect_iter() {
-            sect.decode::<T, _>(output)?;
+            sect?.decode::<T, _>(output)?;
         }
         Ok(())
     }
@@ -452,7 +457,7 @@ impl<'buf, T: VectBase> VectorItemIter<'buf, T> {
 
     fn next_section(&mut self) {
         self.sink.reset();
-        if let Some(next_sect) = self.sect_iter.next() {
+        if let Some(Ok(next_sect)) = self.sect_iter.next() {
             next_sect.decode::<T, _>(&mut self.sink).expect("Unexpected end of section");
         }
     }
@@ -511,7 +516,7 @@ mod test {
         let reader = VectorReader::try_new(&finished_vec[..]).unwrap();
         assert_eq!(reader.num_elements(), num_values);
         assert_eq!(reader.sect_iter().count(), 2);
-        assert_eq!(reader.num_null_sections(), 0);
+        assert_eq!(reader.num_null_sections().unwrap(), 0);
 
         let elems: Vec<u64> = reader.iterate().collect();
         assert_eq!(elems, data);
@@ -545,7 +550,7 @@ mod test {
         let reader = VectorReader::try_new(&finished_vec[..]).unwrap();
         assert_eq!(reader.num_elements(), total_elems);
         assert_eq!(reader.sect_iter().count(), 3);
-        assert_eq!(reader.num_null_sections(), 1);
+        assert_eq!(reader.num_null_sections().unwrap(), 1);
 
         assert_eq!(reader.get_stats().num_null_sections, 1);
 
@@ -578,7 +583,7 @@ mod test {
         let reader = VectorReader::try_new(&finished_vec[..]).unwrap();
         assert_eq!(reader.num_elements(), total_elems);
         assert_eq!(reader.sect_iter().count(), 6);
-        assert_eq!(reader.num_null_sections(), 1);
+        assert_eq!(reader.num_null_sections().unwrap(), 1);
 
         let elems: Vec<u64> = reader.iterate().collect();
         assert_eq!(elems, all_data);
@@ -642,6 +647,21 @@ mod test {
         let finished_vec = appender.finish(vector_size).unwrap();
         let reader = VectorReader::<u32>::try_new(&finished_vec[..]).unwrap();
         assert_eq!(reader.num_elements(), vector_size as usize);
+    }
+
+    #[test]
+    fn test_read_wrong_type_error() {
+        let vector_size = 400;
+        let mut appender = VectorU32Appender::new(1024).unwrap();
+        for i in 0..vector_size {
+            appender.append((i % 4) + 1).unwrap();
+        }
+        let finished_vec = appender.finish(vector_size as usize).unwrap();
+
+        let reader = VectorReader::<u64>::try_new(&finished_vec[..]).unwrap();
+        let mut sink = VecSink::<u64>::new();
+        let res = reader.decode_to_sink(&mut sink);
+        assert_eq!(res.is_err(), true);
     }
 }
 

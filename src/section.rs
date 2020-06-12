@@ -518,17 +518,20 @@ impl<'buf> FixedSectIterator<'buf> {
     }
 }
 
-/// FixedSectIterator iterates over (FixedSectEnum, section byte slice) - the section byte slice contains
-/// all the bytes from the section including the starting type byte.
+/// FixedSectIterator iterates over Result of FixedSectEnum.  Any decoding errors, such as trying to decode
+/// a u32 section with u64 or the wrong type, for example, would result in Err(CodingError).
+/// Iterates until there are no more bytes left in self.encoded_bytes.
 impl<'buf> Iterator for FixedSectIterator<'buf> {
-    type Item = FixedSectEnum<'buf>;
+    type Item = Result<FixedSectEnum<'buf>, CodingError>;
     fn next(&mut self) -> Option<Self::Item> {
-        match Self::Item::try_from(self.encoded_bytes) {
-            Ok(fsreader) => {
+        if self.encoded_bytes.is_empty() {
+            None
+        } else {
+            let res = FixedSectEnum::try_from(self.encoded_bytes);
+            if let Ok(fsreader) = &res {
                 self.encoded_bytes = &self.encoded_bytes[fsreader.num_bytes()..];
-                Some(fsreader)
-            },
-            Err(_) => None
+            }
+            Some(res)
         }
     }
 }
@@ -607,7 +610,7 @@ mod tests {
 
         // Now, create an iterator and collect enums.  Send only the slice of written data, no more.
         let sect_iter = FixedSectIterator::new(&buf[0..off]);
-        let sections = sect_iter.collect::<Vec<FixedSectEnum>>();
+        let sections = sect_iter.map(|x| x.unwrap()).collect::<Vec<FixedSectEnum>>();
 
         assert_eq!(sections.len(), 2);
         let sect = &sections[0];
