@@ -13,11 +13,12 @@ use crate::nibblepacking;
 use crate::nibblepack_simd;
 use crate::sink::*;
 
+use std::ops::Add;
 use std::convert::TryFrom;
 
 use arrayref::array_ref;
 use enum_dispatch::enum_dispatch;
-use num::Zero;
+use num::{PrimInt, Unsigned, Zero};
 use packed_simd::{u32x8, u64x8};
 use scroll::{ctx, Endian, Pread, Pwrite, LE};
 
@@ -30,6 +31,8 @@ pub enum SectionType {
     Null = 0,                // n unavailable or null elements in a row
     NibblePackedU64Medium = 1,   // Nibble-packed u64's, total size < 64KB
     NibblePackedU32Medium = 2,   // Nibble-packed u32's, total size < 64KB
+    DeltaNPU64Medium      = 3,   // Nibble-packed u64's, delta encoded, total size < 64KB
+    DeltaNPU32Medium      = 4,   // Nibble-packed u64's, delta encoded, total size < 64KB
 }
 
 impl TryFrom<u8> for SectionType {
@@ -39,6 +42,8 @@ impl TryFrom<u8> for SectionType {
             0 => Ok(SectionType::Null),
             1 => Ok(SectionType::NibblePackedU64Medium),
             2 => Ok(SectionType::NibblePackedU32Medium),
+            3 => Ok(SectionType::DeltaNPU64Medium),
+            4 => Ok(SectionType::DeltaNPU32Medium),
             _ => Err(CodingError::InvalidSectionType(n)),
         }
     }
@@ -208,12 +213,16 @@ pub trait FixedSection {
     fn sect_bytes(&self) -> Option<&[u8]>;
 }
 
+/// A FixedSectEnum is an enum over different FixedSection implementations, for the purpose of very fast,
+/// inlineable iteration over different section types without resorting to dynamic method calls.
 #[enum_dispatch(FixedSection)]
 #[derive(Debug, PartialEq)]
 pub enum FixedSectEnum<'buf> {
     NullFixedSect,
     NibblePackU64MedFixedSect(NibblePackU64MedFixedSect<'buf>),
     NibblePackU32MedFixedSect(NibblePackU32MedFixedSect<'buf>),
+    DeltaNPU64MedFixedSect(DeltaNPMedFixedSect<'buf, u64>),
+    DeltaNPU32MedFixedSect(DeltaNPMedFixedSect<'buf, u32>),
 }
 
 impl<'buf> FixedSectEnum<'buf> {
@@ -234,7 +243,7 @@ impl<'buf> FixedSectEnum<'buf> {
     #[inline]
     pub fn decode<T, S>(self, sink: &mut S) -> Result<(), CodingError>
     where T: VectBase, S: Sink<T::SI> {
-        T::Mapper::decode_to_sink(self, sink)
+        T::Utils::decode_to_sink(self, sink)
     }
 
     /// Is this a null section?
@@ -260,6 +269,10 @@ impl<'buf> TryFrom<&'buf [u8]> for FixedSectEnum<'buf> {
                 NibblePackU64MedFixedSect::try_from(s).map(|sect| sect.into()),
             SectionType::NibblePackedU32Medium =>
                 NibblePackU32MedFixedSect::try_from(s).map(|sect| sect.into()),
+            SectionType::DeltaNPU64Medium =>
+                DeltaNPMedFixedSect::<u64>::try_from(s).map(|sect| sect.into()),
+            SectionType::DeltaNPU32Medium =>
+                DeltaNPMedFixedSect::<u32>::try_from(s).map(|sect| sect.into()),
         }
     }
 }
@@ -283,59 +296,106 @@ pub trait FixedSectReader<T: VectBase>: FixedSection {
         where Output: Sink<T::SI>;
 }
 
-/// Trait to help map FixedSectReader from a FixedSectEnum
-pub trait EnumToFSReader<T: VectBase> {
+/// Utility trait for FixedSectReader/Writers, to help:
+/// - map FixedSectReader from a FixedSectEnum
+/// - for a const byte width
+/// - connect generic section implementations to type-specific methods such as Scroll pread/write
+pub trait FSUtils<T: VectBase> {
+    const BYTE_WIDTH: usize;
     fn decode_to_sink<Output>(e: FixedSectEnum, output: &mut Output) -> Result<(), CodingError>
         where Output: Sink<T::SI>;
+
+    /// Read a primitive T from a buffer at an offset, little-endian
+    fn read_le_offset<'a>(buf: &'a [u8], offset: usize) -> Result<T, scroll::Error>;
+
+    /// Write a primitive T to a buffer at an offset, little-endian
+    fn write_le_offset<'a>(buf: &'a mut [u8], offset: usize, value: T) -> Result<usize, scroll::Error>;
+
+    /// Generic: decoding to sink method for a single encoded NibblePacked 8 octets of data
+    fn nibblepack_decode<'a, S: Sink<T::SI>>(buf: &'a [u8], sink: &mut S) -> Result<&'a [u8], CodingError>;
 }
 
-pub struct ETFSR {}
+pub struct FSUtilsMarker {}
 
-impl<'buf> EnumToFSReader<u32> for ETFSR {
+impl<'buf> FSUtils<u32> for FSUtilsMarker {
+    const BYTE_WIDTH: usize = 4;
+
     #[inline]
     fn decode_to_sink<Output>(e: FixedSectEnum, output: &mut Output) -> Result<(), CodingError>
         where Output: Sink<u32x8> {
         match e {
             FixedSectEnum::NullFixedSect(nfs) => FixedSectReader::<u32>::decode_to_sink(&nfs, output),
             FixedSectEnum::NibblePackU32MedFixedSect(fs) => fs.decode_to_sink(output),
+            FixedSectEnum::DeltaNPU32MedFixedSect(fs)    => fs.decode_to_sink(output),
             _ => Err(CodingError::InvalidFormat(format!("Section {:?} invalid for u32", e))),
         }
     }
 
+    #[inline]
+    fn read_le_offset<'a>(buf: &'a [u8], offset: usize) -> Result<u32, scroll::Error> {
+        buf.pread_with(offset, LE)
+    }
+
+    #[inline]
+    fn write_le_offset<'a>(buf: &'a mut [u8], offset: usize, value: u32) -> Result<usize, scroll::Error> {
+        buf.pwrite_with(value, offset, LE)
+    }
+
+    #[inline]
+    fn nibblepack_decode<'a, S: Sink<u32x8>>(buf: &'a [u8], sink: &mut S) -> Result<&'a [u8], CodingError> {
+        nibblepack_simd::unpack8_u32_simd(buf, sink)
+    }
 }
 
-impl<'buf> EnumToFSReader<u64> for ETFSR {
+impl<'buf> FSUtils<u64> for FSUtilsMarker {
+    const BYTE_WIDTH: usize = 8;
+
     #[inline]
     fn decode_to_sink<Output>(e: FixedSectEnum, output: &mut Output) -> Result<(), CodingError>
         where Output: Sink<u64x8> {
         match e {
             FixedSectEnum::NullFixedSect(nfs) => FixedSectReader::<u64>::decode_to_sink(&nfs, output),
             FixedSectEnum::NibblePackU64MedFixedSect(fs) => fs.decode_to_sink(output),
+            FixedSectEnum::DeltaNPU64MedFixedSect(fs)    => fs.decode_to_sink(output),
             _ => Err(CodingError::InvalidFormat(format!("Section {:?} invalid for u64", e))),
         }
     }
 
+    #[inline]
+    fn read_le_offset<'a>(buf: &'a [u8], offset: usize) -> Result<u64, scroll::Error> {
+        buf.pread_with(offset, LE)
+    }
+
+    #[inline]
+    fn write_le_offset<'a>(buf: &'a mut [u8], offset: usize, value: u64) -> Result<usize, scroll::Error> {
+        buf.pwrite_with(value, offset, LE)
+    }
+
+    #[inline]
+    fn nibblepack_decode<'a, S: Sink<u64x8>>(buf: &'a [u8], sink: &mut S) -> Result<&'a [u8], CodingError> {
+        nibblepacking::nibble_unpack8(buf, sink)
+    }
 }
 
 
 /// This is a base trait to tie together many disparate types: SinkInput, the base number type of the vector,
-/// the FixedSectReader and Enum types, EnumToFSReader, etc. etc.
+/// the FixedSectReader and Enum types, FSUtils, etc. etc.
 /// Many other structs such as VectorReader and Filter structs will take VectBase as a base type.
 /// Choose the base type for your vector - u32, u64 etc.  This should be same type used in Appender as well as
 /// readers, filters, etc.
-pub trait VectBase: Zero + Copy {
-    type SI: SinkInput<Item = Self>;
-    type Mapper: EnumToFSReader<Self>;
+pub trait VectBase: Zero + Copy + std::fmt::Debug {
+    type SI: SinkInput<Item = Self> + Add<Self::SI, Output = Self::SI>;
+    type Utils: FSUtils<Self>;
 }
 
 impl VectBase for u32 {
     type SI = u32x8;
-    type Mapper = ETFSR;
+    type Utils = FSUtilsMarker;
 }
 
 impl VectBase for u64 {
     type SI = u64x8;
-    type Mapper = ETFSR;
+    type Utils = FSUtilsMarker;
 }
 
 pub const NULL_SECT_U32: [u32; 256] = [0u32; 256];
@@ -371,12 +431,22 @@ impl<T: VectBase> FixedSectReader<T> for NullFixedSect {
     }
 }
 
+/// Statistics on data to be written by a FixedSectionWriter
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SectionWriterStats<T: VectBase> {
+    pub min: T,
+    pub max: T,
+}
+
 /// A trait for FixedSection writers of a particular type
-pub trait FixedSectionWriter<T: Sized> {
+pub trait FixedSectionWriter<T: VectBase> {
     /// Writes out/encodes a fixed section given input values of a particular type, starting at a given offset
     /// into the destination buffer.
     /// Returns the new offset after writing succeeds.
-    fn write(out_buf: &mut [u8], offset: usize, values: &[T]) -> Result<usize, CodingError>;
+    fn write(out_buf: &mut [u8],
+             offset: usize,
+             values: &[T],
+             stats: SectionWriterStats<T>) -> Result<usize, CodingError>;
 }
 
 /// A FixedSection which is: NP=NibblePack'ed, u64 elements, Medium sized (<64KB)
@@ -423,7 +493,10 @@ impl<'buf> FixedSectionWriter<u64> for NibblePackU64MedFixedSect<'buf> {
     /// performing NibblePacking in the meantime.  Note: length value will be written last.
     /// Only after the write succeeds should vector metadata such as length/num bytes be updated.
     /// Returns the final offset after last bytes written.
-    fn write(out_buf: &mut [u8], offset: usize, values: &[u64]) -> Result<usize, CodingError> {
+    fn write(out_buf: &mut [u8],
+             offset: usize,
+             values: &[u64],
+             _s: SectionWriterStats<u64>) -> Result<usize, CodingError> {
         assert_eq!(values.len(), FIXED_LEN);
         out_buf.pwrite_with(SectionType::NibblePackedU64Medium as u8, offset, LE)?;
         let mut off = offset + 3;
@@ -485,7 +558,10 @@ impl<'buf> FixedSectionWriter<u32> for NibblePackU32MedFixedSect<'buf> {
     /// performing NibblePacking in the meantime.  Note: length value will be written last.
     /// Only after the write succeeds should vector metadata such as length/num bytes be updated.
     /// Returns the final offset after last bytes written.
-    fn write(out_buf: &mut [u8], offset: usize, values: &[u32]) -> Result<usize, CodingError> {
+    fn write(out_buf: &mut [u8],
+             offset: usize,
+             values: &[u32],
+             _s: SectionWriterStats<u32>) -> Result<usize, CodingError> {
         assert_eq!(values.len(), FIXED_LEN);
         out_buf.pwrite_with(SectionType::NibblePackedU32Medium as u8, offset, LE)?;
         let off = nibblepacking::pack_u64(values.iter().map(|&x| x as u64),
@@ -503,6 +579,94 @@ impl<'buf> FixedSectionWriter<u32> for NibblePackU32MedFixedSect<'buf> {
 
 impl<'buf> FixedSection for NibblePackU32MedFixedSect<'buf> {
     fn num_bytes(&self) -> usize { self.encoded_bytes as usize + 3 }
+    fn sect_bytes(&self) -> Option<&[u8]> { Some(self.sect_bytes) }
+}
+
+/// A FixedSection which is: NP=NibblePack'ed, Medium sized (<64KB), Delta encoded
+/// Binary layout (all offsets are from start of section/type byte)
+///  +0   SectionType::NibblePackedU64Medium
+///  +1   2-byte LE size of NibblePack-encoded bytes to follow after this header
+///  +3   u8: number of bits needed by largest delta
+///  +4   u64: base u64 value
+///  +12   NibblePack-encoded 256 u64 deltas
+#[derive(Debug, PartialEq, Copy, Clone)]
+pub struct DeltaNPMedFixedSect<'buf, T>
+where T: PrimInt + Unsigned {
+    sect_bytes: &'buf [u8],
+    encoded_bytes: u16,   // This is a separate field as sect_bytes might extend beyond end of section
+                          // for performance reasons.  It is faster to be able to read beyond end
+    base: T,            // base value from which deltas are added
+    delta_numbits: u8,    // max number of bits needed for deltas.  Can be used to compute max
+}
+
+const DELTA_NP_SECT_HEADER_SIZE: usize = 12;
+
+impl<'buf, T> DeltaNPMedFixedSect<'buf, T>
+where T: PrimInt + Unsigned + VectBase {
+    /// Tries to create a new DeltaNPMedFixedSect from a byte slice starting from the first
+    /// section type byte of the section.  Byte slice should be as large as the length bytes indicate.
+    pub fn try_from(sect_bytes: &'buf [u8]) -> Result<Self, CodingError> {
+        let encoded_bytes = sect_bytes.pread_with(1, LE)
+                                .and_then(|n| {
+                                    if (n + DELTA_NP_SECT_HEADER_SIZE as u16) <= sect_bytes.len() as u16 { Ok(n) }
+                                    else { Err(scroll::Error::Custom("Slice not large enough".to_string())) }
+                                })?;
+        let base: T = T::Utils::read_le_offset(sect_bytes, 4)?;
+        let delta_numbits: u8 = sect_bytes[3];
+        Ok(Self { sect_bytes, encoded_bytes, base, delta_numbits })
+    }
+
+    /// Returns the max range of deltas (rounded up to 2^n) using delta_numbits
+    pub fn delta_range(&self) -> u64 {
+        2u64.pow(self.delta_numbits as u32)
+    }
+}
+
+impl<'buf, T> FixedSectReader<T> for DeltaNPMedFixedSect<'buf, T>
+where T: PrimInt + Unsigned + VectBase {
+    #[inline]
+    fn decode_to_sink<Output>(&self, output: &mut Output) -> Result<(), CodingError>
+        where Output: Sink<T::SI> {
+        let mut values_left = FIXED_LEN;
+        let mut inbuf = &self.sect_bytes[DELTA_NP_SECT_HEADER_SIZE..];
+        let mut delta_sink = AddConstSink::new(self.base, output);
+        while values_left > 0 {
+            inbuf = T::Utils::nibblepack_decode(inbuf, &mut delta_sink)?;
+            values_left -= 8;
+        }
+        Ok(())
+    }
+}
+
+impl<'buf, T> FixedSectionWriter<T> for DeltaNPMedFixedSect<'buf, T>
+where T: PrimInt + Unsigned + VectBase + num::cast::AsPrimitive<u64> {
+    /// Writes out a delta-encoded NibblePacked section.
+    /// Returns the final offset after last bytes written.
+    fn write(out_buf: &mut [u8],
+             offset: usize,
+             values: &[T],
+             stats: SectionWriterStats<T>) -> Result<usize, CodingError> {
+        assert_eq!(values.len(), FIXED_LEN);
+        out_buf.pwrite_with(SectionType::DeltaNPU64Medium as u8, offset, LE)?;
+        let off = nibblepacking::pack_u64(values.iter().map(|&x| (x - stats.min).as_()),
+                                          out_buf,
+                                          offset + DELTA_NP_SECT_HEADER_SIZE)?;
+        let num_bytes = off - offset - DELTA_NP_SECT_HEADER_SIZE;
+        if num_bytes <= 65535 {
+            out_buf.pwrite_with(num_bytes as u16, offset + 1, LE)?;
+            T::Utils::write_le_offset(out_buf, offset + 4, stats.min)?;
+            let delta_numbits = (T::Utils::BYTE_WIDTH * 8) as u8 - (stats.max - stats.min).leading_zeros() as u8;
+            out_buf[offset + 3] = delta_numbits;
+            Ok(off)
+        } else {
+            Err(CodingError::NotEnoughSpace)
+        }
+    }
+}
+
+impl<'buf, T> FixedSection for DeltaNPMedFixedSect<'buf, T>
+where T: PrimInt + Unsigned {
+    fn num_bytes(&self) -> usize { self.encoded_bytes as usize + DELTA_NP_SECT_HEADER_SIZE }
     fn sect_bytes(&self) -> Option<&[u8]> { Some(self.sect_bytes) }
 }
 
@@ -547,6 +711,10 @@ pub fn unpack_u32_section(buf: &[u8]) -> [u32; 256] {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    // Dummy SectionWriterStats for test use
+    const DUMMY_STATS: SectionWriterStats<u64> = SectionWriterStats { min: 0, max: u64::MAX };
 
     #[test]
     fn test_sectwriter_cannot_add_sect_header() {
@@ -587,13 +755,13 @@ mod tests {
         let mut buf = [0u8; 2];  // header needs 3 bytes at least
         let data: Vec<u64> = (0..256).collect();
 
-        let res = NibblePackU64MedFixedSect::write(&mut buf, 0, &data[..]);
+        let res = NibblePackU64MedFixedSect::write(&mut buf, 0, &data[..], DUMMY_STATS);
         assert_eq!(res, Err(CodingError::NotEnoughSpace));
 
         // No room for all values
         let mut buf = [0u8; 100];  // Need ~312 bytes to NibblePack compress the inputs above
 
-        let res = NibblePackU64MedFixedSect::write(&mut buf, 0, &data[..]);
+        let res = NibblePackU64MedFixedSect::write(&mut buf, 0, &data[..], DUMMY_STATS);
         assert_eq!(res, Err(CodingError::NotEnoughSpace));
     }
 
@@ -606,7 +774,7 @@ mod tests {
         off = NullFixedSect::write(&mut buf, off).unwrap();
         assert_eq!(off, 1);
 
-        off = NibblePackU64MedFixedSect::write(&mut buf, off, &data[..]).unwrap();
+        off = NibblePackU64MedFixedSect::write(&mut buf, off, &data[..], DUMMY_STATS).unwrap();
 
         // Now, create an iterator and collect enums.  Send only the slice of written data, no more.
         let sect_iter = FixedSectIterator::new(&buf[0..off]);
@@ -637,11 +805,45 @@ mod tests {
         let data: Vec<u32> = (0..256).collect();
         let mut off = 0;
 
-        off = NibblePackU32MedFixedSect::write(&mut buf, off, &data[..]).unwrap();
+        let stats = SectionWriterStats { min: 0, max: *data.iter().max().unwrap() };
+        off = NibblePackU32MedFixedSect::write(&mut buf, off, &data[..], stats).unwrap();
 
         let values = unpack_u32_section(&buf[..off]);
         assert_eq!(values.iter().count(), 256);
         assert_eq!(values.iter().map(|&x| x).collect::<Vec<u32>>(), data);
+    }
+
+    #[test]
+    fn test_delta_write_and_decode() {
+        // u64
+        let mut buf = [0u8; 1024];
+        let now_inst = SystemTime::now();
+        let base_millis = now_inst.duration_since(UNIX_EPOCH).unwrap().as_millis() as u64;
+        let data: Vec<u64> = (0..256).map(|x| x + base_millis).collect();
+        let mut _off = 0;
+
+        let stats = SectionWriterStats { min: base_millis, max: *data.iter().max().unwrap() };
+        _off = DeltaNPMedFixedSect::write(&mut buf, _off, &data[..], stats).unwrap();
+
+        let mut sink = U64_256Sink::new();
+        let section = DeltaNPMedFixedSect::<u64>::try_from(&buf).unwrap();
+        assert!(section.num_bytes() < 350);   // 12 + ~1 bytes per element + overhead of 25% =~ 320
+        section.decode_to_sink(&mut sink).unwrap();
+        assert_eq!(sink.values[..], data[..]);
+        assert_eq!(section.delta_range(), 256);
+
+        // u32
+        let data: Vec<u32> = (0..256).map(|x| x + 100_000).collect();
+        let stats = SectionWriterStats { min: 100_000u32, max: *data.iter().max().unwrap() };
+        _off = 0;
+        _off = DeltaNPMedFixedSect::<u32>::write(&mut buf, _off, &data[..], stats).unwrap();
+
+        let mut sink = U32_256Sink::new();
+        let section = DeltaNPMedFixedSect::<u32>::try_from(&buf).unwrap();
+        assert!(section.num_bytes() < 350);   // 12 + ~1 bytes per element + overhead of 25% =~ 320
+        section.decode_to_sink(&mut sink).unwrap();
+        assert_eq!(sink.values[..], data[..]);
+        assert_eq!(section.delta_range(), 256);
     }
 }
 

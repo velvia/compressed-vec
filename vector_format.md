@@ -4,6 +4,12 @@ The format for each vector is defined in detail below.  It is loosely based on t
 
 The vector bytes are wire-format ready, they can be written to and read from disk or network and interpreted/read with no further transformations needed.
 
+The goals of the vector format are:
+* Optimize for fast, SIMD-based decoding.
+* Enable fast, aligned data filtering and processing by having fixed section boundaries
+* Varied encoding techniques to bring compression to within roughly 2x of good general purpose compression techniques, or better
+* Contain metadata to enable fast filtering
+
 ### Header
 
 The header is 16 bytes.  The first 6 bytes are binary compatible with FiloDB vectors.  The structs are defined in `src/vector.rs` in the `BinaryVector` and `FixedSectStats` structs.
@@ -20,7 +26,7 @@ For the vectors produced by this crate, the major type code used is `VectorType:
 
 ### Sections
 
-Following the header are one or more sections of fixed 256 elements each.  If the last section does not have 256 elements, nulls are added until the section has 256 elements.
+Following the header are one or more sections of fixed 256 elements each.  If the last section does not have 256 elements, nulls are added until the section has 256 elements.  Sections cannot carry over state to adjacent sections; each section must contain enough state to completely decode itself.  This is needed for fast iteration and skipping over sections in filtering and data processing.
 
 The first byte of a section contains the section code.  See the `SectionType` enum in `src/section.rs` for the up to date list of codes, but it is included here for convenience:
 
@@ -29,6 +35,7 @@ pub enum SectionType {
     Null = 0,                // n unavailable or null elements in a row
     NibblePackedU64Medium = 1,   // Nibble-packed u64's, total size < 64KB
     NibblePackedU32Medium = 2,   // Nibble-packed u32's, total size < 64KB
+    DeltaNPU64Medium      = 3,   // Nibble-packed u64's, delta encoded, total size < 64KB
 }
 ```
 
@@ -40,13 +47,25 @@ Null sections are key to encoding sparse vectors efficiently, and should be leve
 
 ### NibblePacked U64/U32 sections
 
-The NibblePacked section codes (1/2) represent 256 values (u32 or u64), packed in groups of 8 using the [NibblePacking](https://github.com/filodb/FiloDB/blob/develop/doc/compression.md#predictive-nibblepacking) algorithm from FiloDB.  NibblePacking uses only 1 bit for zero values, and stores the minimum number of nibbles only.  From the start of the section, there are 3 header bytes, followed by the NibblePack-encoded data.
+The NibblePacked section codes (1/2) represent 256 values (u32 or u64), packed in groups of 8 using the [NibblePacking](https://github.com/filodb/FiloDB/blob/develop/doc/compression.md#predictive-nibblepacking) algorithm from FiloDB (used in production at massive scale).  NibblePacking uses only 1 bit for zero values, and stores the minimum number of nibbles only.  From the start of the section, there are 3 header bytes, followed by the NibblePack-encoded data.
 
 | offset | description |
 | ------ | ----------- |
 | +0     | u8: section type code: 1 or 2 |
 | +1     | u16: number of bytes of this section, excluding these 3 header bytes  |
 | +3     | Start of NibblePack-encoded data, back to back.   This starts with the bitmask byte, then the number of nibbles byte, then the nibbles, repeated for every group of 8 u64's/u32's |
+
+### Delta-Encoded NibblePacked Sections
+
+For values such as timestamps which are mostly in a certain narrow range, the naive NibblePacked algorithm above might result in more nibbles than necessary.  Delta-encoded sections store a delta from the minimum value in the stretch of 256 raw values, and the deltas are then NibblePack compressed.  The goal here is to attain higher compression as the deltas should be smaller.
+
+| offset | description |
+| ------ | ----------- |
+| +0     | u8: section type code: 3? |
+| +1     | u16: number of bytes of this section, excluding these 3 header bytes  |
+| +3     | u8: number of bits needed for the largest delta.  Or the smallest n where 2^n >= max raw value.  |
+| +4     | u64: The "base" value to which all deltas are added to form original value |
+| +12     | Start of NibblePack-encoded deltas, back to back.   This starts with the bitmask byte, then the number of nibbles byte, then the nibbles, repeated for every group of 8 u64's/u32's |
 
 ### Filtering and Vector Processing
 

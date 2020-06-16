@@ -5,9 +5,11 @@
 /// Sinks can be stacked for processing.  For example, unpack and multiply f32's, then store to Vec:
 ///     regular unpack8_u32_simd -> u32 to f32 XOR sink -> MultiplySink -> VecSink
 /// TODO: examples
+use std::ops::Add;
+
 use crate::section::VectBase;
 
-use num::Zero;
+use num::{Zero, Unsigned};
 use packed_simd::{u32x8, u64x8};
 
 /// An input to a sink.  Sinks take a type which represents 8 values of an int, such as [u64; 8].
@@ -189,3 +191,40 @@ where T: VectBase {
 
 pub type U32_256Sink = Section256Sink<u32>;
 pub type U64_256Sink = Section256Sink<u64>;
+
+
+/// A Sink for adding a constant value to all output elements.  Note that all SIMD types we use also support Add :)
+/// This sink is also used for decoding Delta-encoded u64/u32 values, then passing the output to another sink.
+#[derive(Debug)]
+pub struct AddConstSink<'a, T, S>
+where T: VectBase + Unsigned,
+      S: Sink<T::SI> {
+    base: T::SI,
+    inner_sink: &'a mut S,
+}
+
+impl<'a, T, S> AddConstSink<'a, T, S>
+where T: VectBase + Unsigned,
+      S: Sink<T::SI> {
+    pub fn new(base: T, inner_sink: &'a mut S) -> Self {
+        Self { base: T::SI::splat(base), inner_sink }
+    }
+}
+
+impl<'a, T, S> Sink<T::SI> for AddConstSink<'a, T, S>
+where T: VectBase + Unsigned,
+      S: Sink<T::SI>,
+      T::SI: Add<T::SI, Output = T::SI> {
+    #[inline]
+    fn process(&mut self, unpacked: T::SI) {
+        self.inner_sink.process(unpacked + self.base);
+    }
+
+    #[inline]
+    fn process_zeroes(&mut self) {
+        // base + 0 == base
+        self.inner_sink.process(self.base);
+    }
+
+    fn reset(&mut self) {}
+}

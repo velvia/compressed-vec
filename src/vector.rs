@@ -27,7 +27,7 @@
 use std::marker::PhantomData;
 use std::mem;
 
-use num::Unsigned;
+use num::{Bounded, Num};
 use scroll::{ctx, Endian, Pread, Pwrite, LE};
 
 use crate::error::CodingError;
@@ -175,18 +175,19 @@ const GROW_BYTES: usize = 4096;
 /// So readers who read just the vector itself will not get the updates in write_buf.
 /// This appender must be consulted for querying write_buf values.
 pub struct VectorAppender<T, W>
-where T: VectBase + Unsigned + Clone,
+where T: VectBase + Num + Clone,
       W: FixedSectionWriter<T> {
     vect_buf: Vec<u8>,
     offset: usize,
     header: BinaryVector,
     write_buf: Vec<T>,
     stats: FixedSectStats,
+    buf_stats: SectionWriterStats<T>,
     sect_writer: PhantomData<W>     // Uses no space, this tells rustc we need W
 }
 
 impl<T, W> VectorAppender<T, W>
-where T: VectBase + Unsigned + Clone,
+where T: VectBase + Num + Bounded + Ord + Clone,
       W: FixedSectionWriter<T> {
     /// Creates a new VectorAppender.  Usually you'll want to use one of the more concrete typed structs.
     /// Also initializes the vect_buf with a valid section header.  Initial capacity is the initial size of the
@@ -200,6 +201,7 @@ where T: VectBase + Unsigned + Clone,
             header: BinaryVector::new(major_type, minor_type),
             write_buf: Vec::with_capacity(FIXED_LEN),
             stats: FixedSectStats::new(),
+            buf_stats: SectionWriterStats { min: T::max_value(), max: T::min_value() },
             sect_writer: PhantomData
         };
         new_self.write_header()?;
@@ -209,6 +211,11 @@ where T: VectBase + Unsigned + Clone,
     /// Total number of elements including encoded sections and write buffer
     pub fn num_elements(&self) -> usize {
         self.stats.num_elements as usize + self.write_buf.len()
+    }
+
+    /// Returns SectionWriterStats for write buffer values (min, max, etc.)
+    pub fn get_buf_stats(&self) -> SectionWriterStats<T> {
+        self.buf_stats
     }
 
     /// Resets the internal state for appending a new vector.
@@ -232,7 +239,8 @@ where T: VectBase + Unsigned + Clone,
         assert!(self.write_buf.len() == FIXED_LEN);
         self.offset = self.retry_grow(|s| W::write(s.vect_buf.as_mut_slice(),
                                                    s.offset,
-                                                   &s.write_buf[..]))?;
+                                                   &s.write_buf[..],
+                                                   s.buf_stats))?;
         self.write_buf.clear();
         self.stats.update_num_elems(&mut self.vect_buf, self.stats.num_elements + FIXED_LEN as u32)?;
         self.header.update_num_bytes(self.vect_buf.as_mut_slice(),
@@ -260,6 +268,8 @@ where T: VectBase + Unsigned + Clone,
     /// into the vector.
     pub fn append(&mut self, value: T) -> Result<(), CodingError> {
         self.write_buf.push(value);
+        if value > self.buf_stats.max { self.buf_stats.max = value; }
+        if value < self.buf_stats.min { self.buf_stats.min = value; }
         if self.write_buf.len() >= FIXED_LEN {
             self.encode_section()
         } else {
@@ -505,6 +515,8 @@ mod test {
 
         // Now append the data
         data.iter().for_each(|&e| appender.append(e).unwrap());
+        assert_eq!(appender.get_buf_stats().min, 0);
+        assert_eq!(appender.get_buf_stats().max, num_values as u64 - 1);
 
         // At this point only 1 section has been written, the vector is not finished yet.
         let reader = appender.reader();

@@ -5,7 +5,7 @@ extern crate compressed_vec;
 use criterion::{Criterion, Benchmark, BenchmarkId, Throughput};
 use compressed_vec::*;
 use compressed_vec::sink::{Sink, U32_256Sink};
-use compressed_vec::section::{FixedSectReader, NibblePackU32MedFixedSect};
+use compressed_vec::section::{FixedSectReader, NibblePackU32MedFixedSect, SectionWriterStats};
 
 fn nibblepack8_varlen(c: &mut Criterion) {
     // This method from Criterion allows us to run benchmarks and vary some variable.
@@ -94,6 +94,11 @@ fn unpack_delta_u64s(c: &mut Criterion) {
 
 use section::FixedSectionWriter;
 
+fn stats_from_data(data: &[u32]) -> SectionWriterStats<u32> {
+    SectionWriterStats { min: *data.iter().min().unwrap(),
+                         max: *data.iter().max().unwrap(), }
+}
+
 fn section32_decode_dense_lowcard_varnonzeroes(c: &mut Criterion) {
     let mut group = c.benchmark_group("section u32 decode");
     group.throughput(Throughput::Elements(256));
@@ -101,7 +106,8 @@ fn section32_decode_dense_lowcard_varnonzeroes(c: &mut Criterion) {
     for nonzero_f in [0.05, 0.25, 0.5, 0.9, 1.0].iter() {
         let inputs = sinewave_varnonzeros_u32(*nonzero_f, 256);
         let mut buf = [0u8; 1024];
-        NibblePackU32MedFixedSect::write(&mut buf, 0, &inputs[..]).unwrap();
+        let stats = stats_from_data(&inputs);
+        NibblePackU32MedFixedSect::write(&mut buf, 0, &inputs[..], stats).unwrap();
 
         group.bench_with_input(BenchmarkId::new("dense low card, nonzero%: ", *nonzero_f), &buf,
                                |b, buf| b.iter(|| {
@@ -118,7 +124,8 @@ fn section32_decode_dense_varnumbits(c: &mut Criterion) {
     for numbits in [4, 8, 12, 16, 20].iter() {
         let inputs = sinewave_varnumbits_u32(*numbits, 256);
         let mut buf = [0u8; 1024];
-        NibblePackU32MedFixedSect::write(&mut buf, 0, &inputs[..]).unwrap();
+        let stats = stats_from_data(&inputs);
+        NibblePackU32MedFixedSect::write(&mut buf, 0, &inputs[..], stats).unwrap();
 
         group.bench_with_input(BenchmarkId::new("dense low card, numbits: ", *numbits), &buf,
                                |b, buf| b.iter(|| {
