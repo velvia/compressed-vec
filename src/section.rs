@@ -647,6 +647,7 @@ where T: PrimInt + Unsigned + VectBase + num::cast::AsPrimitive<u64> {
              values: &[T],
              stats: SectionWriterStats<T>) -> Result<usize, CodingError> {
         assert_eq!(values.len(), FIXED_LEN);
+        // TODO: fix this, this is the wrong section type!!
         out_buf.pwrite_with(SectionType::DeltaNPU64Medium as u8, offset, LE)?;
         let off = nibblepacking::pack_u64(values.iter().map(|&x| (x - stats.min).as_()),
                                           out_buf,
@@ -667,6 +668,56 @@ where T: PrimInt + Unsigned + VectBase + num::cast::AsPrimitive<u64> {
 impl<'buf, T> FixedSection for DeltaNPMedFixedSect<'buf, T>
 where T: PrimInt + Unsigned {
     fn num_bytes(&self) -> usize { self.encoded_bytes as usize + DELTA_NP_SECT_HEADER_SIZE }
+    fn sect_bytes(&self) -> Option<&[u8]> { Some(self.sect_bytes) }
+}
+
+/// A Constant section represents repeating values
+#[derive(Debug, PartialEq, Copy, Clone)]
+pub struct ConstFixedSect<'buf, T: VectBase> {
+    sect_bytes: &'buf [u8],
+    value: T
+}
+
+impl<'buf, T: VectBase> ConstFixedSect<'buf, T> {
+    pub fn try_from(sect_bytes: &'buf [u8]) -> Result<Self, CodingError> {
+        if sect_bytes.len() >= (1 + T::Utils::BYTE_WIDTH) {
+            let value = T::Utils::read_le_offset(sect_bytes, 1)?;
+            Ok(Self { sect_bytes, value })
+        } else {
+            Err(CodingError::InputTooShort)
+        }
+    }
+
+    pub fn get_value(&self) -> T { self.value }
+}
+
+impl<'buf, T: VectBase> FixedSectReader<T> for ConstFixedSect<'buf, T> {
+    #[inline]
+    fn decode_to_sink<Output>(&self, output: &mut Output) -> Result<(), CodingError>
+        where Output: Sink<T::SI> {
+        let octet = T::SI::splat(self.value);
+        for _ in 0..FIXED_LEN/8 {
+            output.process(octet);
+        }
+        Ok(())
+    }
+}
+
+impl<'buf, T: VectBase> FixedSectionWriter<T> for ConstFixedSect<'buf, T> {
+    fn write(out_buf: &mut [u8],
+             offset: usize,
+             values: &[T],
+             _stats: SectionWriterStats<T>) -> Result<usize, CodingError> {
+        assert_eq!(values.len(), FIXED_LEN);
+        // TODO: need right section type here
+        out_buf.pwrite_with(SectionType::DeltaNPU64Medium as u8, offset, LE)?;
+        T::Utils::write_le_offset(out_buf, offset + 1, values[0])?;
+        Ok(offset + 1 + T::Utils::BYTE_WIDTH)
+    }
+}
+
+impl<'buf, T: VectBase> FixedSection for ConstFixedSect<'buf, T> {
+    fn num_bytes(&self) -> usize { 1 + T::Utils::BYTE_WIDTH }
     fn sect_bytes(&self) -> Option<&[u8]> { Some(self.sect_bytes) }
 }
 
@@ -844,6 +895,20 @@ mod tests {
         section.decode_to_sink(&mut sink).unwrap();
         assert_eq!(sink.values[..], data[..]);
         assert_eq!(section.delta_range(), 256);
+    }
+
+    #[test]
+    fn test_const_write_and_decode() {
+        let mut buf = [0u8; 256];
+        let data = [400u64; 256];
+        let stats = SectionWriterStats { min: 400, max: 400 };
+        let _off = ConstFixedSect::write(&mut buf, 0, &data[..], stats).unwrap();
+
+        let mut sink = U64_256Sink::new();
+        let section = ConstFixedSect::<u64>::try_from(&buf).unwrap();
+        assert_eq!(section.num_bytes(), 9);
+        section.decode_to_sink(&mut sink).unwrap();
+        assert_eq!(sink.values[..], data[..]);
     }
 }
 

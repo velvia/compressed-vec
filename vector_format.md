@@ -67,6 +67,15 @@ For values such as timestamps which are mostly in a certain narrow range, the na
 | +4     | u64: The "base" value to which all deltas are added to form original value |
 | +12     | Start of NibblePack-encoded deltas, back to back.   This starts with the bitmask byte, then the number of nibbles byte, then the nibbles, repeated for every group of 8 u64's/u32's |
 
+### Constant Sections
+
+These sections represent 256 repeated values.  
+
+| offset | description |
+| ------ | ----------- |
+| +0     | u8: section type code: 5 |
+| +1     | u32/u64/etc.: the constant value |
+
 ### Filtering and Vector Processing
 
 Fast filtering and vector processing of multiple vectors is enabled by the following:
