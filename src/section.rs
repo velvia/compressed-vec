@@ -27,14 +27,14 @@ use scroll::{ctx, Endian, Pread, Pwrite, LE};
 
 /// For FixedSections this represents the first (and maybe only) byte of the section.
 /// For SectionHeader based sections this is the byte at offset 4 into the header.
+/// FixedSections are generic, they do not contain type information which is in the vector type.
 #[repr(u8)]
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub enum SectionType {
-    Null = 0,                // n unavailable or null elements in a row
-    NibblePackedU64Medium = 1,   // Nibble-packed u64's, total size < 64KB
-    NibblePackedU32Medium = 2,   // Nibble-packed u32's, total size < 64KB
-    DeltaNPU64Medium      = 3,   // Nibble-packed u64's, delta encoded, total size < 64KB
-    DeltaNPU32Medium      = 4,   // Nibble-packed u64's, delta encoded, total size < 64KB
+    Null = 0,                 // FIXED_LEN unavailable or null elements in a row
+    NibblePackedMedium = 1,   // Nibble-packed u64/u32's, total size < 64KB
+    DeltaNPMedium      = 3,   // Nibble-packed u64/u32's, delta encoded, total size < 64KB
+    Constant           = 5,   // Constant value section
 }
 
 impl TryFrom<u8> for SectionType {
@@ -42,10 +42,9 @@ impl TryFrom<u8> for SectionType {
     fn try_from(n: u8) -> Result<SectionType, Self::Error> {
         match n {
             0 => Ok(SectionType::Null),
-            1 => Ok(SectionType::NibblePackedU64Medium),
-            2 => Ok(SectionType::NibblePackedU32Medium),
-            3 => Ok(SectionType::DeltaNPU64Medium),
-            4 => Ok(SectionType::DeltaNPU32Medium),
+            1 => Ok(SectionType::NibblePackedMedium),
+            3 => Ok(SectionType::DeltaNPMedium),
+            5 => Ok(SectionType::Constant),
             _ => Err(CodingError::InvalidSectionType(n)),
         }
     }
@@ -223,6 +222,7 @@ pub enum FixedSectEnum<'buf, T: VectBase> {
     NullFixedSect,
     NibblePackMedFixedSect(NibblePackMedFixedSect<'buf, T>),
     DeltaNPMedFixedSect(DeltaNPMedFixedSect<'buf, T>),
+    ConstFixedSect(ConstFixedSect<'buf, T>),
 }
 
 impl<'buf, T: VectBase> FixedSectEnum<'buf, T> {
@@ -233,7 +233,7 @@ impl<'buf, T: VectBase> FixedSectEnum<'buf, T> {
     /// # use compressed_vec::section::{FixedSectEnum, SectionType};
     /// # use std::convert::TryFrom;
     /// # let mut sect_bytes = [0u8; 256];
-    /// # sect_bytes[0] = SectionType::NibblePackedU32Medium as u8;
+    /// # sect_bytes[0] = SectionType::NibblePackedMedium as u8;
     /// # sect_bytes[1] = 253;
     ///     let sect = FixedSectEnum::<u32>::try_from(&sect_bytes[..]).unwrap();
     ///     let mut sink = compressed_vec::sink::U32_256Sink::new();
@@ -265,14 +265,12 @@ impl<'buf, T: VectBase> TryFrom<&'buf [u8]> for FixedSectEnum<'buf, T> {
         let sect_type = SectionType::try_from(s[0])?;
         match sect_type {
             SectionType::Null => Ok((NullFixedSect {}).into()),
-            SectionType::NibblePackedU64Medium =>
+            SectionType::NibblePackedMedium =>
                 NibblePackMedFixedSect::try_from(s).map(|sect| sect.into()),
-            SectionType::NibblePackedU32Medium =>
-                NibblePackMedFixedSect::try_from(s).map(|sect| sect.into()),
-            SectionType::DeltaNPU64Medium =>
+            SectionType::DeltaNPMedium =>
                 DeltaNPMedFixedSect::try_from(s).map(|sect| sect.into()),
-            SectionType::DeltaNPU32Medium =>
-                DeltaNPMedFixedSect::try_from(s).map(|sect| sect.into()),
+            SectionType::Constant =>
+                ConstFixedSect::try_from(s).map(|sect| sect.into()),
         }
     }
 }
@@ -327,7 +325,8 @@ impl<'buf> FSUtils<u32> for FSUtilsMarker {
             FixedSectEnum::NullFixedSect(nfs) => FixedSectReader::<u32>::decode_to_sink(&nfs, output),
             FixedSectEnum::NibblePackMedFixedSect(fs) => fs.decode_to_sink(output),
             FixedSectEnum::DeltaNPMedFixedSect(fs)    => fs.decode_to_sink(output),
-            _ => Err(CodingError::InvalidFormat(format!("Section {:?} invalid for u32", e))),
+            FixedSectEnum::ConstFixedSect(cs)         => cs.decode_to_sink(output),
+            // _ => Err(CodingError::InvalidFormat(format!("Section {:?} invalid for u32", e))),
         }
     }
 
@@ -357,7 +356,8 @@ impl<'buf> FSUtils<u64> for FSUtilsMarker {
             FixedSectEnum::NullFixedSect(nfs) => FixedSectReader::<u64>::decode_to_sink(&nfs, output),
             FixedSectEnum::NibblePackMedFixedSect(fs) => fs.decode_to_sink(output),
             FixedSectEnum::DeltaNPMedFixedSect(fs)    => fs.decode_to_sink(output),
-            _ => Err(CodingError::InvalidFormat(format!("Section {:?} invalid for u64", e))),
+            FixedSectEnum::ConstFixedSect(cs)         => cs.decode_to_sink(output),
+            // _ => Err(CodingError::InvalidFormat(format!("Section {:?} invalid for u64", e))),
         }
     }
 
@@ -451,7 +451,7 @@ pub trait FixedSectionWriter<T: VectBase> {
 
 /// A FixedSection which is: NP=NibblePack'ed, u64/u32 elements, Medium sized (<64KB)
 /// Binary layout (all offsets are from start of section/type byte)
-///  +0   SectionType::NibblePackedU64Medium
+///  +0   SectionType::NibblePackedMedium
 ///  +1   2-byte LE size of NibblePack-encoded bytes to follow
 ///  +3   NibblePack-encoded 256 u64 elements
 #[derive(Debug, PartialEq, Copy, Clone)]
@@ -499,7 +499,7 @@ impl<'buf> FixedSectionWriter<u64> for NibblePackMedFixedSect<'buf, u64> {
              values: &[u64],
              _s: SectionWriterStats<u64>) -> Result<usize, CodingError> {
         assert_eq!(values.len(), FIXED_LEN);
-        out_buf.pwrite_with(SectionType::NibblePackedU64Medium as u8, offset, LE)?;
+        out_buf.pwrite_with(SectionType::NibblePackedMedium as u8, offset, LE)?;
         let mut off = offset + 3;
         for i in 0..32 {
             let chunk8 = array_ref![values, i*8, 8];
@@ -530,7 +530,7 @@ impl<'buf> FixedSectionWriter<u32> for NibblePackMedFixedSect<'buf, u32> {
              values: &[u32],
              _s: SectionWriterStats<u32>) -> Result<usize, CodingError> {
         assert_eq!(values.len(), FIXED_LEN);
-        out_buf.pwrite_with(SectionType::NibblePackedU32Medium as u8, offset, LE)?;
+        out_buf.pwrite_with(SectionType::NibblePackedMedium as u8, offset, LE)?;
         let off = nibblepacking::pack_u64(values.iter().map(|&x| x as u64),
                                           out_buf,
                                           offset + 3)?;
@@ -547,7 +547,7 @@ impl<'buf> FixedSectionWriter<u32> for NibblePackMedFixedSect<'buf, u32> {
 
 /// A FixedSection which is: NP=NibblePack'ed, Medium sized (<64KB), Delta encoded
 /// Binary layout (all offsets are from start of section/type byte)
-///  +0   SectionType::NibblePackedU64Medium
+///  +0   SectionType::DeltaNPMedium
 ///  +1   2-byte LE size of NibblePack-encoded bytes to follow after this header
 ///  +3   u8: number of bits needed by largest delta
 ///  +4   u64: base u64 value
@@ -558,7 +558,7 @@ where T: VectBase {
     sect_bytes: &'buf [u8],
     encoded_bytes: u16,   // This is a separate field as sect_bytes might extend beyond end of section
                           // for performance reasons.  It is faster to be able to read beyond end
-    base: T,            // base value from which deltas are added
+    base: T,              // base value from which deltas are added
     delta_numbits: u8,    // max number of bits needed for deltas.  Can be used to compute max
 }
 
@@ -610,8 +610,7 @@ where T: PrimInt + Unsigned + VectBase + num::cast::AsPrimitive<u64> {
              values: &[T],
              stats: SectionWriterStats<T>) -> Result<usize, CodingError> {
         assert_eq!(values.len(), FIXED_LEN);
-        // TODO: fix this, this is the wrong section type!!
-        out_buf.pwrite_with(SectionType::DeltaNPU64Medium as u8, offset, LE)?;
+        out_buf.pwrite_with(SectionType::DeltaNPMedium as u8, offset, LE)?;
         let off = nibblepacking::pack_u64(values.iter().map(|&x| (x - stats.min).as_()),
                                           out_buf,
                                           offset + DELTA_NP_SECT_HEADER_SIZE)?;
@@ -672,8 +671,7 @@ impl<'buf, T: VectBase> FixedSectionWriter<T> for ConstFixedSect<'buf, T> {
              values: &[T],
              _stats: SectionWriterStats<T>) -> Result<usize, CodingError> {
         assert_eq!(values.len(), FIXED_LEN);
-        // TODO: need right section type here
-        out_buf.pwrite_with(SectionType::DeltaNPU64Medium as u8, offset, LE)?;
+        out_buf.pwrite_with(SectionType::Constant as u8, offset, LE)?;
         T::Utils::write_le_offset(out_buf, offset + 1, values[0])?;
         Ok(offset + 1 + T::Utils::BYTE_WIDTH)
     }

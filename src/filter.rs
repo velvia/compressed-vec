@@ -331,7 +331,7 @@ mod tests {
     #[test]
     fn test_filter_u64_equals() {
         let vector_size: usize = 400;
-        let mut appender = VectorU64Appender::new(1024).unwrap();
+        let mut appender = VectorU64Appender::try_new(1024).unwrap();
         for i in 0..vector_size {
             appender.append((i as u64 % 4) + 1).unwrap();
         }
@@ -350,7 +350,7 @@ mod tests {
     #[test]
     fn test_filter_u32_oneof() {
         let vector_size: usize = 400;
-        let mut appender = VectorU32Appender::new(1024).unwrap();
+        let mut appender = VectorU32Appender::try_new(1024).unwrap();
         for i in 0..vector_size {
             appender.append((i as u32 % 12) + 1).unwrap();
         }

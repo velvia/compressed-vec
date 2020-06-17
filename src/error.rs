@@ -6,6 +6,7 @@ pub enum CodingError {
     InvalidSectionType(u8),
     InvalidFormat(String),
     InvalidNumRows(usize, usize),    // Number passed into finish(), number of actual rows written so far
+    WrongVectorType(u8),             // Eg Used a VectorReader::<u64> on a u32 vector
     ScrollErr(String),
 }
 

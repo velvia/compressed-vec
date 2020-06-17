@@ -6,7 +6,7 @@
 /// Appending values is easy.  Appenders dynamically size the input buffer.
 /// ```
 /// # use compressed_vec::vector::*;
-///     let mut appender = VectorU32Appender::new(1024).unwrap();
+///     let mut appender = VectorU32Appender::try_new(1024).unwrap();
 ///     appender.append(1).unwrap();
 ///     appender.append(2).unwrap();
 ///     appender.append_nulls(3).unwrap();
@@ -91,6 +91,8 @@ pub enum VectorSubType {
     REPEATED = 0x06, // vectors.ConstVector
     INT = 0x07,      // Int gets special type because Longs and Doubles may be encoded as Int
     IntNoMask = 0x08,
+    FixedU64  = 0x10,  // FixedSection256 with u64 elements
+    FixedU32  = 0x11,  // FixedSection256 with u32 elements
 }
 
 impl VectorSubType {
@@ -137,6 +139,20 @@ impl BinaryVector {
         buf.pwrite_with(self.num_bytes, 0, LE)?;
         Ok(())
     }
+}
+
+
+/// Mapping of VectBase type to VectorSubType.  Allows checking of vector type by reader.
+pub trait BaseSubtypeMapping {
+    fn vect_subtype() -> VectorSubType;
+}
+
+impl BaseSubtypeMapping for u64 {
+    fn vect_subtype() -> VectorSubType { VectorSubType::FixedU64 }
+}
+
+impl BaseSubtypeMapping for u32 {
+    fn vect_subtype() -> VectorSubType { VectorSubType::FixedU32 }
 }
 
 #[derive(Debug, Copy, Clone, Pread, Pwrite)]
@@ -187,18 +203,15 @@ where T: VectBase + Num + Clone,
 }
 
 impl<T, W> VectorAppender<T, W>
-where T: VectBase + Num + Bounded + Ord + Clone,
+where T: VectBase + Num + Bounded + Ord + Clone + BaseSubtypeMapping,
       W: FixedSectionWriter<T> {
-    /// Creates a new VectorAppender.  Usually you'll want to use one of the more concrete typed structs.
-    /// Also initializes the vect_buf with a valid section header.  Initial capacity is the initial size of the
-    /// write buffer, which can grow.
-    pub fn try_new(major_type: VectorType,
-                   minor_type: VectorSubType,
-                   initial_capacity: usize) -> Result<Self, CodingError> {
+    /// Creates a new VectorAppender.  Initializes the vect_buf with a valid section header.
+    /// Initial capacity is the initial size of the write buffer, which can grow.
+    pub fn try_new(initial_capacity: usize) -> Result<Self, CodingError> {
         let mut new_self = Self {
             vect_buf: vec![0; initial_capacity],
             offset: NUM_HEADER_BYTES_TOTAL,
-            header: BinaryVector::new(major_type, minor_type),
+            header: BinaryVector::new(VectorType::FixedSection256, T::vect_subtype()),
             write_buf: Vec::with_capacity(FIXED_LEN),
             stats: FixedSectStats::new(),
             buf_stats: SectionWriterStats { min: T::max_value(), max: T::min_value() },
@@ -352,24 +365,10 @@ where T: VectBase + Num + Bounded + Ord + Clone,
 /// Regular U64 appender with just plain NibblePacked encoding
 pub type VectorU64Appender = VectorAppender<u64, NibblePackMedFixedSect<'static, u64>>;
 
-impl VectorU64Appender {
-    pub fn new(initial_capacity: usize) -> Result<VectorU64Appender, CodingError> {
-        VectorU64Appender::try_new(VectorType::FixedSection256, VectorSubType::Primitive,
-                                      initial_capacity)
-    }
-}
-
 /// Regular U32 appender with just plain NibblePacked encoding
 // NOTE: lifetime annotation of 'static is fine here as FixedSectionWriter has static methods only and do not
 // depend on structs
 pub type VectorU32Appender = VectorAppender<u32, NibblePackMedFixedSect<'static, u32>>;
-
-impl VectorU32Appender {
-    pub fn new(initial_capacity: usize) -> Result<VectorU32Appender, CodingError> {
-        VectorU32Appender::try_new(VectorType::FixedSection256, VectorSubType::Primitive,
-                                      initial_capacity)
-    }
-}
 
 
 /// A reader for reading sections and elements from a `VectorAppender` written vector.
@@ -381,13 +380,17 @@ pub struct VectorReader<'buf, T: VectBase> {
     _reader: PhantomData<T>,
 }
 
-impl<'buf, T: VectBase> VectorReader<'buf, T> {
+impl<'buf, T> VectorReader<'buf, T>
+where T: VectBase + BaseSubtypeMapping {
     /// Creates a new reader out of the bytes for the vector.
     // TODO: verify that the vector is a fixed sect int.
     pub fn try_new(vect_bytes: &'buf [u8]) -> Result<Self, CodingError> {
         let bytes_from_header: u32 = vect_bytes.pread_with(0, LE)?;
+        let subtype: u8 = vect_bytes.pread_with(offset_of!(BinaryVector, minor_type), LE)?;
         if vect_bytes.len() < (bytes_from_header + 4) as usize {
             Err(CodingError::InputTooShort)
+        } else if subtype != T::vect_subtype() as u8 {
+            Err(CodingError::WrongVectorType(subtype))
         } else {
             Ok(Self { vect_bytes, _reader: PhantomData })
         }
@@ -504,7 +507,7 @@ mod test {
         let num_values: usize = 500;
         let data: Vec<u64> = (0..num_values as u64).collect();
 
-        let mut appender = VectorU64Appender::new(1024).unwrap();
+        let mut appender = VectorU64Appender::try_new(1024).unwrap();
         {
             let reader = appender.reader();
 
@@ -552,7 +555,7 @@ mod test {
         (0..num_nulls).for_each(|_i| all_data.push(0));
         all_data.extend_from_slice(&data2[..]);
 
-        let mut appender = VectorU64Appender::new(1024).unwrap();
+        let mut appender = VectorU64Appender::try_new(1024).unwrap();
         data1.iter().for_each(|&e| appender.append(e).unwrap());
         appender.append_nulls(num_nulls).unwrap();
         data2.iter().for_each(|&e| appender.append(e).unwrap());
@@ -584,7 +587,7 @@ mod test {
         all_data.extend_from_slice(&data1[..]);
         (0..num_nulls).for_each(|_i| all_data.push(0));
 
-        let mut appender = VectorU64Appender::new(300).unwrap();
+        let mut appender = VectorU64Appender::try_new(300).unwrap();
         data1.iter().for_each(|&e| appender.append(e).unwrap());
         appender.append_nulls(num_nulls).unwrap();
         data1.iter().for_each(|&e| appender.append(e).unwrap());
@@ -605,7 +608,7 @@ mod test {
     fn test_append_u32_and_filter() {
         // First test appending with no nulls.  Just 1,2,3,4 and filter for 3, should get 1/4 of appended elements
         let vector_size = 400;
-        let mut appender = VectorU32Appender::new(1024).unwrap();
+        let mut appender = VectorU32Appender::try_new(1024).unwrap();
         for i in 0..vector_size {
             appender.append((i % 4) + 1).unwrap();
         }
@@ -648,7 +651,7 @@ mod test {
     #[test]
     fn test_append_u32_large_vector() {
         // 9999 nulls, then an item, 10 times = 100k items total
-        let mut appender = VectorU32Appender::new(4096).unwrap();
+        let mut appender = VectorU32Appender::try_new(4096).unwrap();
         let vector_size = 100000;
         for _ in 0..10 {
             appender.append_nulls(9999).unwrap();
@@ -664,16 +667,14 @@ mod test {
     #[test]
     fn test_read_wrong_type_error() {
         let vector_size = 400;
-        let mut appender = VectorU32Appender::new(1024).unwrap();
+        let mut appender = VectorU32Appender::try_new(1024).unwrap();
         for i in 0..vector_size {
             appender.append((i % 4) + 1).unwrap();
         }
         let finished_vec = appender.finish(vector_size as usize).unwrap();
 
-        let reader = VectorReader::<u64>::try_new(&finished_vec[..]).unwrap();
-        let mut sink = VecSink::<u64>::new();
-        let res = reader.decode_to_sink(&mut sink);
-        assert_eq!(res.is_err(), true);
+        let res = VectorReader::<u64>::try_new(&finished_vec[..]);
+        assert_eq!(res.err().unwrap(), CodingError::WrongVectorType(VectorSubType::FixedU32 as u8))
     }
 }
 
