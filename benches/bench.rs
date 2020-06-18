@@ -5,7 +5,7 @@ extern crate compressed_vec;
 use criterion::{Criterion, Benchmark, BenchmarkId, Throughput};
 use compressed_vec::*;
 use compressed_vec::sink::{Sink, U32_256Sink};
-use compressed_vec::section::{FixedSectReader, NibblePackU32MedFixedSect, SectionWriterStats};
+use compressed_vec::section::{FixedSectReader, NibblePackMedFixedSect, SectionWriterStats};
 
 fn nibblepack8_varlen(c: &mut Criterion) {
     // This method from Criterion allows us to run benchmarks and vary some variable.
@@ -107,12 +107,12 @@ fn section32_decode_dense_lowcard_varnonzeroes(c: &mut Criterion) {
         let inputs = sinewave_varnonzeros_u32(*nonzero_f, 256);
         let mut buf = [0u8; 1024];
         let stats = stats_from_data(&inputs);
-        NibblePackU32MedFixedSect::write(&mut buf, 0, &inputs[..], stats).unwrap();
+        NibblePackMedFixedSect::<u32>::write(&mut buf, 0, &inputs[..], stats).unwrap();
 
         group.bench_with_input(BenchmarkId::new("dense low card, nonzero%: ", *nonzero_f), &buf,
                                |b, buf| b.iter(|| {
             let mut sink = U32_256Sink::new();
-            NibblePackU32MedFixedSect::try_from(buf).unwrap().decode_to_sink(&mut sink).unwrap();
+            NibblePackMedFixedSect::<u32>::try_from(buf).unwrap().decode_to_sink(&mut sink).unwrap();
         }));
     }
 }
@@ -125,12 +125,12 @@ fn section32_decode_dense_varnumbits(c: &mut Criterion) {
         let inputs = sinewave_varnumbits_u32(*numbits, 256);
         let mut buf = [0u8; 1024];
         let stats = stats_from_data(&inputs);
-        NibblePackU32MedFixedSect::write(&mut buf, 0, &inputs[..], stats).unwrap();
+        NibblePackMedFixedSect::<u32>::write(&mut buf, 0, &inputs[..], stats).unwrap();
 
         group.bench_with_input(BenchmarkId::new("dense low card, numbits: ", *numbits), &buf,
                                |b, buf| b.iter(|| {
             let mut sink = U32_256Sink::new();
-            NibblePackU32MedFixedSect::try_from(buf).unwrap().decode_to_sink(&mut sink).unwrap();
+            NibblePackMedFixedSect::<u32>::try_from(buf).unwrap().decode_to_sink(&mut sink).unwrap();
         }));
     }
 }
@@ -139,14 +139,14 @@ const VECTOR_LENGTH: usize = 10000;
 
 fn dense_lowcard_vector() -> Vec<u8> {
     let inputs = sinewave_varnonzeros_u32(1.0, VECTOR_LENGTH);
-    let mut appender = vector::VectorU32Appender::new(8192).unwrap();
+    let mut appender = vector::VectorU32Appender::try_new(8192).unwrap();
     inputs.iter().for_each(|a| appender.append(*a).unwrap());
     appender.finish(VECTOR_LENGTH).unwrap()
 }
 
 fn dense_lowcard_u64_vector() -> Vec<u8> {
     let inputs = sinewave_varnonzeros_u32(1.0, VECTOR_LENGTH);
-    let mut appender = vector::VectorU64Appender::new(8192).unwrap();
+    let mut appender = vector::VectorU64Appender::try_new(8192).unwrap();
     inputs.iter().for_each(|&a| appender.append(a as u64).unwrap());
     appender.finish(VECTOR_LENGTH).unwrap()
 }
@@ -155,7 +155,7 @@ fn sparse_lowcard_vector(num_nonzeroes: usize) -> Vec<u8> {
     let nonzeroes = sinewave_varnonzeros_u32(1.0, num_nonzeroes/2);
     let nulls = VECTOR_LENGTH - num_nonzeroes;
 
-    let mut appender = vector::VectorU32Appender::new(8192).unwrap();
+    let mut appender = vector::VectorU32Appender::try_new(8192).unwrap();
     appender.append_nulls(nulls/4).unwrap();
     nonzeroes.iter().for_each(|a| appender.append(*a).unwrap());
     appender.append_nulls(nulls/2).unwrap();
