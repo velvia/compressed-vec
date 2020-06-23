@@ -20,6 +20,7 @@ use std::convert::TryFrom;
 
 use enum_dispatch::enum_dispatch;
 use num::{PrimInt, Unsigned, Num, Bounded};
+use num_enum::{TryFromPrimitive, TryFromPrimitiveError};
 use packed_simd::{u32x8, u64x8};
 use scroll::{ctx, Endian, Pread, Pwrite, LE};
 
@@ -28,7 +29,7 @@ use scroll::{ctx, Endian, Pread, Pwrite, LE};
 /// For SectionHeader based sections this is the byte at offset 4 into the header.
 /// FixedSections are generic, they do not contain type information which is in the vector type.
 #[repr(u8)]
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, TryFromPrimitive)]
 pub enum SectionType {
     Null = 0,                 // FIXED_LEN unavailable or null elements in a row
     NibblePackedMedium = 1,   // Nibble-packed u64/u32's, total size < 64KB
@@ -36,21 +37,14 @@ pub enum SectionType {
     Constant           = 5,   // Constant value section
 }
 
-impl TryFrom<u8> for SectionType {
-    type Error = CodingError;
-    fn try_from(n: u8) -> Result<SectionType, Self::Error> {
-        match n {
-            0 => Ok(SectionType::Null),
-            1 => Ok(SectionType::NibblePackedMedium),
-            3 => Ok(SectionType::DeltaNPMedium),
-            5 => Ok(SectionType::Constant),
-            _ => Err(CodingError::InvalidSectionType(n)),
-        }
+impl From<TryFromPrimitiveError<SectionType>> for CodingError {
+    fn from(err: TryFromPrimitiveError<SectionType>) -> CodingError {
+        CodingError::InvalidSectionType(err.number)
     }
 }
 
 impl SectionType {
-    pub fn as_num(&self) -> u8 { *self as u8 }
+    pub fn as_num(self) -> u8 { self as u8 }
 }
 
 // This is a royal pain that Scroll cannot derive codecs for simple enums.  :/
@@ -59,11 +53,7 @@ impl<'a> ctx::TryFromCtx<'a, Endian> for SectionType {
   fn try_from_ctx (src: &'a [u8], ctx: Endian) -> Result<(SectionType, usize), Self::Error> {
       u8::try_from_ctx(src, ctx).and_then(|(n, bytes)| {
           SectionType::try_from(n).map(|s| (s, bytes))
-              .map_err(|e| match e {
-                  CodingError::InvalidSectionType(n) =>
-                      scroll::Error::Custom(format!("InvalidSectionType {:?}", n)),
-                  _ => scroll::Error::Custom("Unknown error".to_string())
-              })
+              .map_err(|e| scroll::Error::Custom(format!("InvalidSectionType {:?}", e.number)))
       })
   }
 }
@@ -235,7 +225,7 @@ impl<'buf, T: VectBase> FixedSectEnum<'buf, T> {
     /// # use compressed_vec::section::{FixedSectEnum, SectionType};
     /// # use std::convert::TryFrom;
     /// # let mut sect_bytes = [0u8; 256];
-    /// # sect_bytes[0] = SectionType::NibblePackedMedium as u8;
+    /// # sect_bytes[0] = SectionType::NibblePackedMedium.as_num();
     /// # sect_bytes[1] = 253;
     ///     let sect = FixedSectEnum::<u32>::try_from(&sect_bytes[..]).unwrap();
     ///     let mut sink = compressed_vec::sink::U32_256Sink::new();
@@ -412,7 +402,7 @@ impl NullFixedSect {
     /// Writes out marker for null section, just one byte.  Returns offset+1 unless
     /// there isn't room or offset is invalid.
     pub fn write(out_buf: &mut [u8], offset: usize) -> Result<usize, CodingError> {
-        out_buf.pwrite_with(SectionType::Null as u8, offset, LE)?;
+        out_buf.pwrite_with(SectionType::Null.as_num(), offset, LE)?;
         Ok(offset + 1)
     }
 }
@@ -540,7 +530,7 @@ where T: PrimInt + Unsigned + VectBase + num::cast::AsPrimitive<u64> {
              values: &[T],
              _s: SectionWriterStats<T>) -> Result<usize, CodingError> {
         assert_eq!(values.len(), FIXED_LEN);
-        out_buf.pwrite_with(SectionType::NibblePackedMedium as u8, offset, LE)?;
+        out_buf.pwrite_with(SectionType::NibblePackedMedium.as_num(), offset, LE)?;
         let off = nibblepacking::pack_u64(values.iter().map(|&x| x.as_()),
                                           out_buf,
                                           offset + 3)?;
@@ -620,7 +610,7 @@ where T: PrimInt + Unsigned + VectBase + num::cast::AsPrimitive<u64> {
              values: &[T],
              stats: SectionWriterStats<T>) -> Result<usize, CodingError> {
         assert_eq!(values.len(), FIXED_LEN);
-        out_buf.pwrite_with(SectionType::DeltaNPMedium as u8, offset, LE)?;
+        out_buf.pwrite_with(SectionType::DeltaNPMedium.as_num(), offset, LE)?;
         let off = nibblepacking::pack_u64(values.iter().map(|&x| (x - stats.min).as_()),
                                           out_buf,
                                           offset + DELTA_NP_SECT_HEADER_SIZE)?;
@@ -681,7 +671,7 @@ impl<'buf, T: VectBase> FixedSectionWriter<T> for ConstFixedSect<'buf, T> {
              values: &[T],
              _stats: SectionWriterStats<T>) -> Result<usize, CodingError> {
         assert_eq!(values.len(), FIXED_LEN);
-        out_buf.pwrite_with(SectionType::Constant as u8, offset, LE)?;
+        out_buf.pwrite_with(SectionType::Constant.as_num(), offset, LE)?;
         T::Utils::write_le_offset(out_buf, offset + 1, values[0])?;
         Ok(offset + 1 + T::Utils::BYTE_WIDTH)
     }
