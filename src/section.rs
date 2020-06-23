@@ -28,7 +28,7 @@ use scroll::{ctx, Endian, Pread, Pwrite, LE};
 /// For SectionHeader based sections this is the byte at offset 4 into the header.
 /// FixedSections are generic, they do not contain type information which is in the vector type.
 #[repr(u8)]
-#[derive(Copy, Clone, Debug, PartialEq)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum SectionType {
     Null = 0,                 // FIXED_LEN unavailable or null elements in a row
     NibblePackedMedium = 1,   // Nibble-packed u64/u32's, total size < 64KB
@@ -211,6 +211,9 @@ pub trait FixedSection {
 
     /// Return the byte slice corresponding to section bytes, if available
     fn sect_bytes(&self) -> Option<&[u8]>;
+
+    /// Returns the section type
+    fn sect_type(&self) -> SectionType;
 }
 
 /// A FixedSectEnum is an enum over different FixedSection implementations, for the purpose of very fast,
@@ -417,6 +420,7 @@ impl NullFixedSect {
 impl FixedSection for NullFixedSect {
     fn num_bytes(&self) -> usize { 1 }
     fn sect_bytes(&self) -> Option<&[u8]> { None }
+    fn sect_type(&self) -> SectionType { SectionType::Null }
 }
 
 impl<T: VectBase> FixedSectReader<T> for NullFixedSect {
@@ -522,6 +526,7 @@ impl<'buf, T: VectBase> FixedSectReader<T> for NibblePackMedFixedSect<'buf, T> {
 impl<'buf, T: VectBase> FixedSection for NibblePackMedFixedSect<'buf, T> {
     fn num_bytes(&self) -> usize { self.encoded_bytes as usize + 3 }
     fn sect_bytes(&self) -> Option<&[u8]> { Some(self.sect_bytes) }
+    fn sect_type(&self) -> SectionType { SectionType::NibblePackedMedium }
 }
 
 impl<'buf, T> FixedSectionWriter<T> for NibblePackMedFixedSect<'buf, T>
@@ -635,6 +640,7 @@ impl<'buf, T> FixedSection for DeltaNPMedFixedSect<'buf, T>
 where T: VectBase {
     fn num_bytes(&self) -> usize { self.encoded_bytes as usize + DELTA_NP_SECT_HEADER_SIZE }
     fn sect_bytes(&self) -> Option<&[u8]> { Some(self.sect_bytes) }
+    fn sect_type(&self) -> SectionType { SectionType::DeltaNPMedium }
 }
 
 /// A Constant section represents repeating values
@@ -684,6 +690,7 @@ impl<'buf, T: VectBase> FixedSectionWriter<T> for ConstFixedSect<'buf, T> {
 impl<'buf, T: VectBase> FixedSection for ConstFixedSect<'buf, T> {
     fn num_bytes(&self) -> usize { 1 + T::Utils::BYTE_WIDTH }
     fn sect_bytes(&self) -> Option<&[u8]> { Some(self.sect_bytes) }
+    fn sect_type(&self) -> SectionType { SectionType::Constant }
 }
 
 

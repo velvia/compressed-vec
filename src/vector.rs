@@ -24,6 +24,7 @@
 /// Calling `finish()` clones the vector bytes to the smallest representation possible, after which the
 /// appender is reset for creation of another new vector.  The finished vector is then immutable and the
 /// caller can read it.
+use std::collections::HashMap;
 use std::marker::PhantomData;
 use std::mem;
 
@@ -156,7 +157,7 @@ impl BaseSubtypeMapping for u32 {
 
 #[derive(Debug, Copy, Clone, Pread, Pwrite)]
 pub struct FixedSectStats {
-    num_elements: u32,
+    pub num_elements: u32,
     num_null_sections: u16,
 }
 
@@ -390,6 +391,10 @@ where T: VectBase + BaseSubtypeMapping {
         self.get_stats().num_elements as usize
     }
 
+    pub fn total_bytes(&self) -> usize {
+        self.vect_bytes.len()
+    }
+
     /// Iterates and discovers the number of null sections.  O(num_sections).  It will be faster to just use
     /// get_stats().
     pub fn num_null_sections(&self) -> Result<usize, CodingError> {
@@ -429,6 +434,47 @@ where T: VectBase + BaseSubtypeMapping {
             sect?.decode(output)?;
         }
         Ok(())
+    }
+}
+
+
+/// Detailed stats, for debugging or perf analysis, on a Vector.  Includes the section types.
+#[derive(Debug)]
+pub struct VectorStats {
+    num_bytes: usize,
+    bytes_per_elem: f32,
+    stats: FixedSectStats,
+    sect_types: Vec<SectionType>,
+}
+
+impl VectorStats {
+    pub fn new<'buf, T: VectBase + BaseSubtypeMapping>(reader: &VectorReader<'buf, T>) -> Self {
+        let stats = reader.get_stats();
+        Self {
+            num_bytes: reader.total_bytes(),
+            bytes_per_elem: reader.total_bytes() as f32 / stats.num_elements as f32,
+            stats,
+            sect_types: reader.sect_iter().map(|sect| sect.unwrap().sect_type()).collect(),
+        }
+    }
+
+    /// Creates a histogram or count of each section type
+    pub fn sect_types_histogram(&self) -> HashMap<SectionType, usize> {
+        let mut map = HashMap::new();
+        self.sect_types.iter().for_each(|&sect_type| {
+            let count = map.entry(sect_type).or_insert(0);
+            *count += 1;
+        });
+        map
+    }
+
+    /// Returns a short summary string of the stats, including a histogram summary
+    pub fn summary_string(&self) -> String {
+        let keyvalues: Vec<_> = self.sect_types_histogram().iter()
+                                    .map(|(k, v)| format!("{:?}={:?}", k, v)).collect();
+        format!("#bytes={:?}   #elems={:?}   bytes-per-elem={:?}\nsection type hist: {}",
+                self.num_bytes, self.stats.num_elements, self.bytes_per_elem,
+                keyvalues.join(", "))
     }
 }
 

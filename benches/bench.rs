@@ -5,7 +5,7 @@ extern crate compressed_vec;
 use criterion::{Criterion, Benchmark, BenchmarkId, Throughput};
 use compressed_vec::*;
 use compressed_vec::sink::{Sink, U32_256Sink};
-use compressed_vec::section::{FixedSectReader, NibblePackMedFixedSect, SectionWriterStats};
+use compressed_vec::section::{FixedSectReader, NibblePackMedFixedSect};
 
 fn nibblepack8_varlen(c: &mut Criterion) {
     // This method from Criterion allows us to run benchmarks and vary some variable.
@@ -94,11 +94,6 @@ fn unpack_delta_u64s(c: &mut Criterion) {
 
 use section::FixedSectionWriter;
 
-fn stats_from_data(data: &[u32]) -> SectionWriterStats<u32> {
-    SectionWriterStats { min: *data.iter().min().unwrap(),
-                         max: *data.iter().max().unwrap(), }
-}
-
 fn section32_decode_dense_lowcard_varnonzeroes(c: &mut Criterion) {
     let mut group = c.benchmark_group("section u32 decode");
     group.throughput(Throughput::Elements(256));
@@ -106,8 +101,7 @@ fn section32_decode_dense_lowcard_varnonzeroes(c: &mut Criterion) {
     for nonzero_f in [0.05, 0.25, 0.5, 0.9, 1.0].iter() {
         let inputs = sinewave_varnonzeros_u32(*nonzero_f, 256);
         let mut buf = [0u8; 1024];
-        let stats = stats_from_data(&inputs);
-        NibblePackMedFixedSect::<u32>::write(&mut buf, 0, &inputs[..], stats).unwrap();
+        NibblePackMedFixedSect::<u32>::gen_stats_and_write(&mut buf, 0, &inputs[..]).unwrap();
 
         group.bench_with_input(BenchmarkId::new("dense low card, nonzero%: ", *nonzero_f), &buf,
                                |b, buf| b.iter(|| {
@@ -124,8 +118,7 @@ fn section32_decode_dense_varnumbits(c: &mut Criterion) {
     for numbits in [4, 8, 12, 16, 20].iter() {
         let inputs = sinewave_varnumbits_u32(*numbits, 256);
         let mut buf = [0u8; 1024];
-        let stats = stats_from_data(&inputs);
-        NibblePackMedFixedSect::<u32>::write(&mut buf, 0, &inputs[..], stats).unwrap();
+        NibblePackMedFixedSect::<u32>::gen_stats_and_write(&mut buf, 0, &inputs[..]).unwrap();
 
         group.bench_with_input(BenchmarkId::new("dense low card, numbits: ", *numbits), &buf,
                                |b, buf| b.iter(|| {
@@ -171,6 +164,9 @@ fn bench_filter_vect(c: &mut Criterion) {
     let sparse_vect = sparse_lowcard_vector(100);
     let dense_reader = vector::VectorReader::<u32>::try_new(&dense_vect[..]).unwrap();
     let sparse_reader = vector::VectorReader::<u32>::try_new(&sparse_vect[..]).unwrap();
+    // To verify composition of dense vector
+    // dbg!(vector::VectorStats::new(&dense_reader));
+    // println!("Dense vector summary: {}", vector::VectorStats::new(&dense_reader).summary_string());
 
     group.bench_function("lowcard u32", |b| b.iter(|| {
         let filter_iter = dense_reader.filter_iter(filter::EqualsSink::<u32>::new(&3));
