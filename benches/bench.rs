@@ -144,6 +144,13 @@ fn dense_lowcard_u64_vector() -> Vec<u8> {
     appender.finish(VECTOR_LENGTH).unwrap()
 }
 
+fn dense_delta_u64_vector(delta: u64) -> Vec<u8> {
+    let inputs = sinewave_varnonzeros_u32(1.0, VECTOR_LENGTH);
+    let mut appender = vector::VectorU64Appender::try_new(8192).unwrap();
+    inputs.iter().for_each(|&a| appender.append(a as u64 + delta).unwrap());
+    appender.finish(VECTOR_LENGTH).unwrap()
+}
+
 fn sparse_lowcard_vector(num_nonzeroes: usize) -> Vec<u8> {
     let nonzeroes = sinewave_varnonzeros_u32(1.0, num_nonzeroes/2);
     let nulls = VECTOR_LENGTH - num_nonzeroes;
@@ -199,8 +206,16 @@ fn bench_filter_u64_vect(c: &mut Criterion) {
     let dense_vect = dense_lowcard_u64_vector();
     let dense_reader = vector::VectorReader::<u64>::try_new(&dense_vect[..]).unwrap();
 
+    let delta_vect = dense_delta_u64_vector(100_000u64);
+    let delta_reader = vector::VectorReader::<u64>::try_new(&delta_vect[..]).unwrap();
+
     group.bench_function("lowcard", |b| b.iter(|| {
         let filter_iter = dense_reader.filter_iter(filter::EqualsSink::<u64>::new(&3));
+        filter::count_hits(filter_iter);
+    }));
+
+    group.bench_function("delta lowcard", |b| b.iter(|| {
+        let filter_iter = delta_reader.filter_iter(filter::EqualsSink::<u64>::new(&100_003));
         filter::count_hits(filter_iter);
     }));
 

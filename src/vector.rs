@@ -352,13 +352,11 @@ where T: VectBase + Clone + BaseSubtypeMapping,
     }
 }
 
-/// Regular U64 appender with just plain NibblePacked encoding
-pub type VectorU64Appender = VectorAppender<u64, NibblePackMedFixedSect<'static, u64>>;
+/// Regular U64 appender with AutoEncoder
+pub type VectorU64Appender = VectorAppender<u64, AutoEncoder>;
 
-/// Regular U32 appender with just plain NibblePacked encoding
-// NOTE: lifetime annotation of 'static is fine here as FixedSectionWriter has static methods only and do not
-// depend on structs
-pub type VectorU32Appender = VectorAppender<u32, NibblePackMedFixedSect<'static, u32>>;
+/// Regular U32 appender with AutoEncoder
+pub type VectorU32Appender = VectorAppender<u32, AutoEncoder>;
 
 
 /// A reader for reading sections and elements from a `VectorAppender` written vector.
@@ -629,9 +627,10 @@ mod test {
         let finished_vec = appender.finish(total_elems).unwrap();
 
         let reader = VectorReader::try_new(&finished_vec[..]).unwrap();
+        println!("summary: {}", VectorStats::new(&reader).summary_string());
         assert_eq!(reader.num_elements(), total_elems);
         assert_eq!(reader.sect_iter().count(), 6);
-        assert_eq!(reader.num_null_sections().unwrap(), 1);
+        assert_eq!(reader.num_null_sections().unwrap(), 2);
 
         let elems: Vec<u64> = reader.iterate().collect();
         assert_eq!(elems, all_data);
