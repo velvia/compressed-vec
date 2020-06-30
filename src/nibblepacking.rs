@@ -160,7 +160,7 @@ pub fn nibble_pack8(inputs: &[u64; 8],
 /// * `trailing_zero_nibbles` - the min # of trailing zero nibbles across all inputs
 /// * `num_nibbles` - the max # of nibbles having nonzero bits in all inputs
 #[inline]
-fn pack_to_even_nibbles(
+pub(crate) fn pack_to_even_nibbles(
     inputs: &[u64; 8],
     out_buffer: &mut [u8],
     offset: usize,
@@ -187,7 +187,7 @@ fn pack_to_even_nibbles(
 /// but modified for the NibblePacking algorithm.  No macros, so slightly less efficient.
 /// TODO: consider using macros like in bitpacking to achieve even more speed :D
 #[inline]
-fn pack_universal(
+pub(crate) fn pack_universal(
     inputs: &[u64; 8],
     out_buffer: &mut [u8],
     offset: usize,

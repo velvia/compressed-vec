@@ -9,27 +9,30 @@ use crate::error::CodingError;
 use crate::nibblepacking::*;
 use crate::sink::*;
 
-use packed_simd::{shuffle, u64x4, u32x8, m32x8, isizex8, cptrx8};
+use packed_simd::{shuffle, u64x8, u32x8, m32x8, isizex8, cptrx8};
 
 
-const ZEROES_U64X4: u64x4 = u64x4::splat(0);
+const ZEROES_U64X8: u64x8 = u64x8::splat(0);
 const ZEROES_U32X8: u32x8 = u32x8::splat(0);
 
-#[inline(always)]
-pub fn nibble_pack8_simd(inputs: &[u64; 8], out_buffer: &mut Vec<u8>) {
-    let input_l = u64x4::from_slice_unaligned(inputs);
-    let input_h = u64x4::from_slice_unaligned(&inputs[4..]);
+/// Partially SIMD-based packing of eight u64 values.  Writes at offset into out_buffer;
+/// Returns final offset.
+// TODO: make rest of steps SIMD too.  Right now only input, bitmask and nibble word computation is SIMD.
+#[inline]
+pub fn pack8_u64_simd(inputs: u64x8, out_buffer: &mut [u8], offset: usize) -> Result<usize, CodingError> {
+    if (offset + 2) >= out_buffer.len() {
+        return Err(CodingError::NotEnoughSpace);
+    }
 
     // Compute nonzero bitmask, comparing each input word to zeroes
-    let zeroes = u64x4::splat(0);
-    let nonzero_mask = input_h.ne(zeroes).bitmask() << 4 |
-                       input_l.ne(zeroes).bitmask();
-    out_buffer.push(nonzero_mask);
+    let nonzero_mask = inputs.ne(ZEROES_U64X8).bitmask();
+    out_buffer[offset] = nonzero_mask;
+    let mut off = offset + 1;
 
     if nonzero_mask != 0 {
         // Compute min of leading and trailing zeroes, using SIMD for speed.
         // Fastest way is to OR all the bits together, then can use the ORed bits to find leading/trailing zeroes
-        let ored_bits = input_l.or() | input_h.or();
+        let ored_bits = inputs.or();
         let min_leading_zeros = ored_bits.leading_zeros();
         let min_trailing_zeros = ored_bits.trailing_zeros();
 
@@ -38,17 +41,18 @@ pub fn nibble_pack8_simd(inputs: &[u64; 8], out_buffer: &mut Vec<u8>) {
         let trailing_nibbles = min_trailing_zeros / 4;
         let num_nibbles = 16 - (min_leading_zeros / 4) - trailing_nibbles;
         let nibble_word = (((num_nibbles - 1) << 4) | trailing_nibbles) as u8;
-        out_buffer.push(nibble_word);
+        out_buffer[off] = nibble_word;
+        off += 1;
 
-        // TODO: finish this, convert to use &mut [u8] buf, and
-        // use SIMD pack - basically the steps in unpack reversed.
-        // Start with u32 - much easier and faster.
-
-        // if (num_nibbles % 2) == 0 {
-        //     pack_to_even_nibbles(inputs, out_buffer, num_nibbles, trailing_nibbles);
-        // } else {
-        //     pack_universal(inputs, out_buffer, num_nibbles, trailing_nibbles);
-        // }
+        let mut input_buf = [0u64; 8];
+        inputs.write_to_slice_unaligned(&mut input_buf);
+        if (num_nibbles % 2) == 0 {
+            pack_to_even_nibbles(&input_buf, out_buffer, off, num_nibbles, trailing_nibbles)
+        } else {
+            pack_universal(&input_buf, out_buffer, off, num_nibbles, trailing_nibbles)
+        }
+    } else {
+        Ok(off)
     }
 }
 
@@ -691,6 +695,26 @@ mod props {
          -> Vec<u32> { v }
     }
 
+    prop_compose! {
+        /// zero_chance: 0..1.0 chance of obtaining a zero
+        fn arb_maybezero_nbits_u64
+            (nbits: usize, zero_chance: f32)
+            (is_zero in prop::bool::weighted(zero_chance as f64),
+             n in 0u64..(1 << nbits))
+            -> u64
+        {
+            if is_zero { 0 } else { n }
+        }
+    }
+
+    // random u64 source arrays
+    prop_compose! {
+        fn arb_u64_vectors()
+                          (nbits in 16usize..40, chance in 0.1f32..0.6)
+                          (mut v in proptest::collection::vec(arb_maybezero_nbits_u64(nbits, chance), 2..10))
+         -> Vec<u64> { v }
+    }
+
     proptest! {
         #[test]
         fn prop_u32simd_pack_unpack(input in arb_u32_vectors()) {
@@ -700,6 +724,20 @@ mod props {
             let res = unpack8_u32_simd(&buf, &mut sink).unwrap();
             let maxlen = 8.min(input.len());
             assert_eq!(sink.values[..maxlen], input[..maxlen]);
+        }
+
+        #[test]
+        fn prop_u64simd_pack(input in arb_u64_vectors()) {
+            let mut buf = [0u8; 1024];
+            let mut inbuf = [0u64; 8];
+            let numelems = input.len().min(8);
+            inbuf[..numelems].copy_from_slice(&input[..numelems]);
+            let simd_inputs = u64x8::from_slice_unaligned(&inbuf[..]);
+            let _off = pack8_u64_simd(simd_inputs, &mut buf, 0).unwrap();
+
+            let mut sink = U64_256Sink::new();
+            let res = nibble_unpack8(&buf, &mut sink).unwrap();
+            assert_eq!(sink.values[..numelems], input[..numelems]);
         }
     }
 }

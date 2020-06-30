@@ -7,21 +7,20 @@
 /// sections, and see `FixedSection` for constant-length (number of elements) sections.
 ///
 /// The code uses Scroll to ensure efficient encoding but one that works across platforms and endianness.
-
-use core::marker::PhantomData;
-
 use crate::error::CodingError;
 use crate::nibblepacking;
 use crate::nibblepack_simd;
 use crate::sink::*;
 
-use std::ops::Add;
+use std::cmp::Ordering;
+use core::marker::PhantomData;
+use std::ops::{Add, BitXor};
 use std::convert::TryFrom;
 
 use enum_dispatch::enum_dispatch;
-use num::{PrimInt, Unsigned, Num, Bounded};
+use num::{PrimInt, Unsigned, Num, Bounded, Float};
 use num_enum::{TryFromPrimitive, TryFromPrimitiveError};
-use packed_simd::{u32x8, u64x8};
+use packed_simd::{u32x8, u64x8, f32x8};
 use scroll::{ctx, Endian, Pread, Pwrite, LE};
 
 
@@ -35,6 +34,7 @@ pub enum SectionType {
     NibblePackedMedium = 1,   // Nibble-packed u64/u32's, total size < 64KB
     DeltaNPMedium      = 3,   // Nibble-packed u64/u32's, delta encoded, total size < 64KB
     Constant           = 5,   // Constant value section
+    XorNPMedium        = 6,   // XORed f64/f32, NibblePacked, total size < 64KB
 }
 
 impl From<TryFromPrimitiveError<SectionType>> for CodingError {
@@ -215,6 +215,7 @@ pub enum FixedSectEnum<'buf, T: VectBase> {
     NibblePackMedFixedSect(NibblePackMedFixedSect<'buf, T>),
     DeltaNPMedFixedSect(DeltaNPMedFixedSect<'buf, T>),
     ConstFixedSect(ConstFixedSect<'buf, T>),
+    XorNPMedFixedSect(XorNPMedFixedSect<'buf>),
 }
 
 impl<'buf, T: VectBase> FixedSectEnum<'buf, T> {
@@ -263,6 +264,8 @@ impl<'buf, T: VectBase> TryFrom<&'buf [u8]> for FixedSectEnum<'buf, T> {
                 DeltaNPMedFixedSect::try_from(s).map(|sect| sect.into()),
             SectionType::Constant =>
                 ConstFixedSect::try_from(s).map(|sect| sect.into()),
+            SectionType::XorNPMedium =>
+                XorNPMedFixedSect::try_from(s).map(|sect| sect.into()),
         }
     }
 }
@@ -318,7 +321,7 @@ impl<'buf> FSUtils<u32> for FSUtilsMarker {
             FixedSectEnum::NibblePackMedFixedSect(fs) => fs.decode_to_sink(output),
             FixedSectEnum::DeltaNPMedFixedSect(fs)    => fs.decode_to_sink(output),
             FixedSectEnum::ConstFixedSect(cs)         => cs.decode_to_sink(output),
-            // _ => Err(CodingError::InvalidFormat(format!("Section {:?} invalid for u32", e))),
+            _ => Err(CodingError::InvalidFormat(format!("Section {:?} invalid for u32", e))),
         }
     }
 
@@ -349,7 +352,7 @@ impl<'buf> FSUtils<u64> for FSUtilsMarker {
             FixedSectEnum::NibblePackMedFixedSect(fs) => fs.decode_to_sink(output),
             FixedSectEnum::DeltaNPMedFixedSect(fs)    => fs.decode_to_sink(output),
             FixedSectEnum::ConstFixedSect(cs)         => cs.decode_to_sink(output),
-            // _ => Err(CodingError::InvalidFormat(format!("Section {:?} invalid for u64", e))),
+            _ => Err(CodingError::InvalidFormat(format!("Section {:?} invalid for u64", e))),
         }
     }
 
@@ -369,13 +372,42 @@ impl<'buf> FSUtils<u64> for FSUtilsMarker {
     }
 }
 
+impl<'buf> FSUtils<f32> for FSUtilsMarker {
+    const BYTE_WIDTH: usize = 4;
 
-/// This is a base trait to tie together many disparate types: SinkInput, the base number type of the vector,
-/// the FixedSectReader and Enum types, FSUtils, etc. etc.
+    #[inline]
+    fn decode_to_sink<Output>(e: FixedSectEnum<f32>, output: &mut Output) -> Result<(), CodingError>
+        where Output: Sink<f32x8> {
+        match e {
+            FixedSectEnum::NullFixedSect(nfs)    => FixedSectReader::<f32>::decode_to_sink(&nfs, output),
+            FixedSectEnum::ConstFixedSect(cs)    => cs.decode_to_sink(output),
+            FixedSectEnum::XorNPMedFixedSect(fs) => fs.decode_to_sink(output),
+            _ => Err(CodingError::InvalidFormat(format!("Section {:?} invalid for f32", e))),
+        }
+    }
+
+    #[inline]
+    fn read_le_offset<'a>(buf: &'a [u8], offset: usize) -> Result<f32, scroll::Error> {
+        buf.pread_with(offset, LE)
+    }
+
+    #[inline]
+    fn write_le_offset<'a>(buf: &'a mut [u8], offset: usize, value: f32) -> Result<usize, scroll::Error> {
+        buf.pwrite_with(value, offset, LE)
+    }
+
+    #[inline]
+    fn nibblepack_decode<'a, S: Sink<f32x8>>(_buf: &'a [u8], _sink: &mut S) -> Result<&'a [u8], CodingError> {
+        unimplemented!()
+    }
+}
+
+
+/// This is a base trait to tie together SinkInput, FSUtils, and other types.
 /// Many other structs such as VectorReader and Filter structs will take VectBase as a base type.
 /// Choose the base type for your vector - u32, u64 etc.  This should be same type used in Appender as well as
 /// readers, filters, etc.
-pub trait VectBase: Num + Bounded + Ord + Copy + std::fmt::Debug {
+pub trait VectBase: Num + Bounded + PartialOrd + Copy + std::fmt::Debug {
     type SI: SinkInput<Item = Self> + Add<Self::SI, Output = Self::SI>;
     type Utils: FSUtils<Self>;
 }
@@ -390,7 +422,11 @@ impl VectBase for u64 {
     type Utils = FSUtilsMarker;
 }
 
-pub const NULL_SECT_U32: [u32; 256] = [0u32; 256];
+impl VectBase for f32 {
+    type SI = f32x8;
+    type Utils = FSUtilsMarker;
+}
+
 
 /// A NullFixedSect are 256 "Null" or 0 elements.
 /// For dictionary encoding they represent missing or Null values.
@@ -432,9 +468,15 @@ pub struct SectionWriterStats<T: VectBase> {
 }
 
 impl<T: VectBase> SectionWriterStats<T> {
+    // For SectionWriterStats we don't care about NaNs as they won't be optimized anyways for compression
+    // TODO: make optimized Ord-based comparisons, use a trait etc
     pub fn from_vect(vect: &[T]) -> Self {
-        Self { min: *vect.iter().min().unwrap_or(&T::zero()),
-               max: *vect.iter().max().unwrap_or(&T::zero()) }
+        Self { min: *vect.iter()
+                         .min_by(|&a, &b| a.partial_cmp(b).unwrap_or(Ordering::Equal))
+                         .unwrap_or(&T::zero()),
+               max: *vect.iter()
+                         .max_by(|&a, &b| a.partial_cmp(b).unwrap_or(Ordering::Equal))
+                         .unwrap_or(&T::zero()) }
     }
 
     #[inline]
@@ -631,6 +673,90 @@ where T: VectBase {
     fn num_bytes(&self) -> usize { self.encoded_bytes as usize + DELTA_NP_SECT_HEADER_SIZE }
     fn sect_bytes(&self) -> Option<&[u8]> { Some(self.sect_bytes) }
     fn sect_type(&self) -> SectionType { SectionType::DeltaNPMedium }
+}
+
+/// A Floating Point section encoded by XORing successive octets, then NibblePacking the result.
+/// Designed for fast SIMD decoding.
+/// For layout details, please refer to vector_format.md
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct XorNPMedFixedSect<'buf> {
+    sect_bytes: &'buf [u8],
+    total_bytes: u16,     // This is a separate field as sect_bytes might extend beyond end of section
+                          // for performance reasons.  It is faster to be able to read beyond end
+}
+
+impl<'buf> XorNPMedFixedSect<'buf> {
+    /// Tries to create a new XorNPMedFixedSect from a byte slice starting from the first
+    /// section type byte of the section.  Byte slice should be as large as the length bytes indicate.
+    pub fn try_from(sect_bytes: &'buf [u8]) -> Result<Self, CodingError> {
+        let total_bytes = sect_bytes.pread_with(1, LE)
+                                .and_then(|n| {
+                                    if n <= sect_bytes.len() as u16 { Ok(n) }
+                                    else { Err(scroll::Error::Custom("Slice not large enough".to_string())) }
+                                })?;
+        Ok(Self { sect_bytes, total_bytes })
+    }
+}
+
+impl<'buf> FixedSectReader<f32> for XorNPMedFixedSect<'buf> {
+    #[inline]
+    fn decode_to_sink<Output>(&self, output: &mut Output) -> Result<(), CodingError>
+        where Output: Sink<f32x8> {
+        let mut values_left = FIXED_LEN;
+        let mut inbuf = &self.sect_bytes[3..];
+        let mut xor_sink = XorSink::<'_, f32, u32, _>::new(output);
+        while values_left > 0 {
+            inbuf = nibblepack_simd::unpack8_u32_simd(inbuf, &mut xor_sink)?;
+            values_left -= 8;
+        }
+        Ok(())
+    }
+}
+
+impl<'buf, T: VectBase + Float> FixedSectionWriter<T> for XorNPMedFixedSect<'buf> {
+    /// Writes out floating point values whose bits are XORed and NibblePacked.
+    /// Returns the final offset after last bytes written.
+    fn write(out_buf: &mut [u8],
+             offset: usize,
+             values: &[T],
+             stats: SectionWriterStats<T>) -> Result<usize, CodingError> {
+        assert_eq!(values.len(), FIXED_LEN);
+        if stats.min == stats.max {
+            if stats.min == T::zero() {
+                // All 0's, write out a null section
+                NullFixedSect::write(out_buf, offset)
+            } else {
+                // Constant section
+                ConstFixedSect::write(out_buf, offset, values, stats)
+            }
+        } else {
+            out_buf.pwrite_with(SectionType::XorNPMedium.as_num(), offset, LE)?;
+
+            // Start with all 0's u32/u64's.  Then, XOR each new octet, replacing the last ones done.
+            let mut last_bits = u64x8::splat(0);
+            let mut off = offset + 3;
+            for octet in values.chunks(8) {
+                // Load octet of floats into a u64x8, doing bit casting (float bits as ints)
+                let octet_bits = T::SI::to_u64x8_bits(octet);
+                off = nibblepack_simd::pack8_u64_simd(octet_bits.bitxor(last_bits), out_buf, off)?;
+                last_bits = octet_bits;
+            }
+
+            let total_bytes = off - offset;
+            if total_bytes <= 65535 {
+                out_buf.pwrite_with(total_bytes as u16, offset + 1, LE)?;
+                Ok(off)
+            } else {
+                Err(CodingError::NotEnoughSpace)
+            }
+        }
+    }
+}
+
+impl<'buf> FixedSection for XorNPMedFixedSect<'buf> {
+    fn num_bytes(&self) -> usize { self.total_bytes as usize }
+    fn sect_bytes(&self) -> Option<&[u8]> { Some(self.sect_bytes) }
+    fn sect_type(&self) -> SectionType { SectionType::XorNPMedium }
 }
 
 /// A Constant section represents repeating values
@@ -941,6 +1067,62 @@ mod tests {
             FixedSectEnum::DeltaNPMedFixedSect(..) => {},
             _ => panic!("Got the wrong sect: {:?}", sect),
         }
+    }
+
+    #[test]
+    fn test_xor_write_and_decode() {
+        let mut buf = [0u8; 1024];
+
+        // f32
+        let data: Vec<f32> = (0..256).map(|x| x as f32 / 1.3).collect();
+        let _off = XorNPMedFixedSect::gen_stats_and_write(&mut buf, 0, &data[..]).unwrap();
+
+        let mut sink = Section256Sink::<f32>::new();
+        let section = XorNPMedFixedSect::try_from(&buf).unwrap();
+        dbg!(section.num_bytes());
+        section.decode_to_sink(&mut sink).unwrap();
+        assert_eq!(sink.values[..], data[..]);
+    }
+
+    #[test]
+    fn test_f32_xor_autoencode() {
+        let mut buf = [0u8; 1024];
+        let mut sink = Section256Sink::<f32>::new();
+
+        // Test 1: Constant, non-null
+        let data = [3.5f32; 256];
+        let _off = XorNPMedFixedSect::gen_stats_and_write(&mut buf, 0, &data[..]).unwrap();
+        let sect = FixedSectEnum::<f32>::try_from(&buf[..]).unwrap();
+        match sect {
+            FixedSectEnum::ConstFixedSect(..) => {},
+            _ => panic!("Got the wrong sect: {:?}", sect),
+        }
+        sect.decode(&mut sink).unwrap();
+        assert_eq!(sink.values[..], data[..]);
+
+        // Test 2: all 0's
+        let data = [0f32; 256];
+        let _off = XorNPMedFixedSect::gen_stats_and_write(&mut buf, 0, &data[..]).unwrap();
+        let sect = FixedSectEnum::<f32>::try_from(&buf[..]).unwrap();
+        match sect {
+            FixedSectEnum::NullFixedSect(..) => {},
+            _ => panic!("Got the wrong sect: {:?}", sect),
+        }
+        sink.reset();
+        sect.decode(&mut sink).unwrap();
+        assert_eq!(sink.values[..], data[..]);
+
+        // Test 3: Normal items range between 1 and n
+        let data: Vec<f32> = (0..256).map(|x| x as f32 / 1.6).collect();
+        let _off = XorNPMedFixedSect::gen_stats_and_write(&mut buf, 0, &data[..]).unwrap();
+        let sect = FixedSectEnum::<f32>::try_from(&buf[..]).unwrap();
+        match sect {
+            FixedSectEnum::XorNPMedFixedSect(..) => {},
+            _ => panic!("Got the wrong sect: {:?}", sect),
+        }
+        sink.reset();
+        sect.decode(&mut sink).unwrap();
+        assert_eq!(sink.values[..], data[..]);
     }
 }
 

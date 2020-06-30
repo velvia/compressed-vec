@@ -191,7 +191,7 @@ const GROW_BYTES: usize = 4096;
 /// So readers who read just the vector itself will not get the updates in write_buf.
 /// This appender must be consulted for querying write_buf values.
 pub struct VectorAppender<T, W>
-where T: VectBase + Clone,
+where T: VectBase + Clone + Ord,
       W: FixedSectionWriter<T> {
     vect_buf: Vec<u8>,
     offset: usize,
@@ -202,7 +202,7 @@ where T: VectBase + Clone,
 }
 
 impl<T, W> VectorAppender<T, W>
-where T: VectBase + Clone + BaseSubtypeMapping,
+where T: VectBase + Clone + Ord + BaseSubtypeMapping,
       W: FixedSectionWriter<T> {
     /// Creates a new VectorAppender.  Initializes the vect_buf with a valid section header.
     /// Initial capacity is the initial size of the write buffer, which can grow.

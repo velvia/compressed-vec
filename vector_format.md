@@ -32,10 +32,11 @@ The first byte of a section contains the section code.  See the `SectionType` en
 
 ```rust
 pub enum SectionType {
-    Null = 0,                // n unavailable or null elements in a row
-    NibblePackedU64Medium = 1,   // Nibble-packed u64's, total size < 64KB
-    NibblePackedU32Medium = 2,   // Nibble-packed u32's, total size < 64KB
-    DeltaNPU64Medium      = 3,   // Nibble-packed u64's, delta encoded, total size < 64KB
+    Null = 0,                 // FIXED_LEN unavailable or null elements in a row
+    NibblePackedMedium = 1,   // Nibble-packed u64/u32's, total size < 64KB
+    DeltaNPMedium      = 3,   // Nibble-packed u64/u32's, delta encoded, total size < 64KB
+    Constant           = 5,   // Constant value section
+    XorNPMedium        = 6,   // XORed f64/f32, NibblePacked, total size < 64KB
 }
 ```
 
@@ -51,7 +52,7 @@ The NibblePacked section codes (1/2) represent 256 values (u32 or u64), packed i
 
 | offset | description |
 | ------ | ----------- |
-| +0     | u8: section type code: 1 or 2 |
+| +0     | u8: section type code: 1 |
 | +1     | u16: number of bytes of this section, excluding these 3 header bytes  |
 | +3     | Start of NibblePack-encoded data, back to back.   This starts with the bitmask byte, then the number of nibbles byte, then the nibbles, repeated for every group of 8 u64's/u32's |
 
@@ -61,7 +62,7 @@ For values such as timestamps which are mostly in a certain narrow range, the na
 
 | offset | description |
 | ------ | ----------- |
-| +0     | u8: section type code: 3? |
+| +0     | u8: section type code: 3 |
 | +1     | u16: number of bytes of this section, excluding these 3 header bytes  |
 | +3     | u8: number of bits needed for the largest delta.  Or the smallest n where 2^n >= max raw value.  |
 | +4     | u64: The "base" value to which all deltas are added to form original value |
@@ -75,6 +76,18 @@ These sections represent 256 repeated values.
 | ------ | ----------- |
 | +0     | u8: section type code: 5 |
 | +1     | u32/u64/etc.: the constant value |
+
+### XOR floating point NibblePacked sections
+
+This is a Gorilla- and Prometheus- inspired algorithm but designed for fast SIMD unpacking.   Floating point numbers that are similar will XOR such that the result only contains a few set bits.  NibblePacking algorithm then packs only the nonzero nibbles, taking care of long trailing zero nibbles.  The algorithm starts with 0's, thus the initial octet gets NibblePacked in the stream.
+
+| offset | description |
+| ------ | ----------- |
+| +0     | u8: section type code: 6 |
+| +1     | u16: number of bytes of this section, including header bytes  |
+| +3     | NibblePacked XORed values |
+
+Each set of 8 values are XORed against the previous set of 8 values, and the difference is NibblePacked.
 
 ### Filtering and Vector Processing
 
