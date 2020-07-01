@@ -93,6 +93,7 @@ pub enum VectorSubType {
     IntNoMask = 0x08,
     FixedU64  = 0x10,  // FixedSection256 with u64 elements
     FixedU32  = 0x11,  // FixedSection256 with u32 elements
+    FixedF32  = 0x12,  // FixedSection256 with f32 elements
 }
 
 impl VectorSubType {
@@ -155,6 +156,10 @@ impl BaseSubtypeMapping for u32 {
     fn vect_subtype() -> VectorSubType { VectorSubType::FixedU32 }
 }
 
+impl BaseSubtypeMapping for f32 {
+    fn vect_subtype() -> VectorSubType { VectorSubType::FixedF32 }
+}
+
 #[derive(Debug, Copy, Clone, Pread, Pwrite)]
 pub struct FixedSectStats {
     pub num_elements: u32,
@@ -190,8 +195,16 @@ const GROW_BYTES: usize = 4096;
 /// NOTE: the vector state (elements, num bytes etc) are only updated when a section is updated.
 /// So readers who read just the vector itself will not get the updates in write_buf.
 /// This appender must be consulted for querying write_buf values.
+///
+/// The easiest way to encode a vector is to create an appender, then use `encode_all()`:
+/// ```
+/// # use compressed_vec::vector::VectorF32XorAppender;
+///      let my_vec = vec![0.5, 1.0, 1.5];
+///      let mut appender = VectorF32XorAppender::try_new(2048).unwrap();
+///      let bytes = appender.encode_all(my_vec).unwrap();
+/// ```
 pub struct VectorAppender<T, W>
-where T: VectBase + Clone + Ord,
+where T: VectBase + Clone + PartialOrd,
       W: FixedSectionWriter<T> {
     vect_buf: Vec<u8>,
     offset: usize,
@@ -202,7 +215,7 @@ where T: VectBase + Clone + Ord,
 }
 
 impl<T, W> VectorAppender<T, W>
-where T: VectBase + Clone + Ord + BaseSubtypeMapping,
+where T: VectBase + Clone + PartialOrd + BaseSubtypeMapping,
       W: FixedSectionWriter<T> {
     /// Creates a new VectorAppender.  Initializes the vect_buf with a valid section header.
     /// Initial capacity is the initial size of the write buffer, which can grow.
@@ -217,6 +230,18 @@ where T: VectBase + Clone + Ord + BaseSubtypeMapping,
         };
         new_self.write_header()?;
         Ok(new_self)
+    }
+
+    /// Convenience method to append all values from a collection and finish a vector, returning the encoded bytes.
+    /// Appender is reset and ready to use, so this can be called repeatedly for successive vectors.
+    pub fn encode_all<C>(&mut self, collection: C) -> Result<Vec<u8>, CodingError>
+    where C: IntoIterator<Item = T> {
+        let mut count = 0;
+        for x in collection.into_iter() {
+            count += 1;
+            self.append(x)?;
+        };
+        self.finish(count)
     }
 
     /// Total number of elements including encoded sections and write buffer
@@ -357,6 +382,9 @@ pub type VectorU64Appender = VectorAppender<u64, AutoEncoder>;
 
 /// Regular U32 appender with AutoEncoder
 pub type VectorU32Appender = VectorAppender<u32, AutoEncoder>;
+
+/// Regular F32 appender with XOR-based optimizing encoder
+pub type VectorF32XorAppender = VectorAppender<f32, XorNPMedFixedSect<'static>>;
 
 
 /// A reader for reading sections and elements from a `VectorAppender` written vector.
@@ -707,6 +735,22 @@ mod test {
 
         let res = VectorReader::<u64>::try_new(&finished_vec[..]);
         assert_eq!(res.err().unwrap(), CodingError::WrongVectorType(VectorSubType::FixedU32 as u8))
+    }
+
+    #[test]
+    fn test_append_f32_decode() {
+        let mut appender = VectorF32XorAppender::try_new(2048).unwrap();
+        let vector_size = 280;
+        let data: Vec<f32> = (0..vector_size).map(|x| x as f32 / 2.8).collect();
+
+        let finished_vec = appender.encode_all(data.clone()).unwrap();
+        let reader = VectorReader::<f32>::try_new(&finished_vec[..]).unwrap();
+        assert_eq!(reader.num_elements(), vector_size);
+
+        // Iterate and decode_to_sink to VecSink should produce same values... except for trailing zeroes
+        let mut sink = VecSink::<f32>::new();
+        reader.decode_to_sink(&mut sink).unwrap();
+        assert_eq!(sink.vec[..vector_size], data[..]);
     }
 }
 

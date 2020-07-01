@@ -133,14 +133,20 @@ const VECTOR_LENGTH: usize = 10000;
 fn dense_lowcard_vector() -> Vec<u8> {
     let inputs = sinewave_varnonzeros_u32(1.0, VECTOR_LENGTH);
     let mut appender = vector::VectorU32Appender::try_new(8192).unwrap();
-    inputs.iter().for_each(|a| appender.append(*a).unwrap());
-    appender.finish(VECTOR_LENGTH).unwrap()
+    appender.encode_all(inputs).unwrap()
 }
 
 fn dense_lowcard_u64_vector() -> Vec<u8> {
     let inputs = sinewave_varnonzeros_u32(1.0, VECTOR_LENGTH);
     let mut appender = vector::VectorU64Appender::try_new(8192).unwrap();
     inputs.iter().for_each(|&a| appender.append(a as u64).unwrap());
+    appender.finish(VECTOR_LENGTH).unwrap()
+}
+
+fn dense_lowcard_f32_vector() -> Vec<u8> {
+    let inputs = sinewave_varnonzeros_u32(0.6, VECTOR_LENGTH);
+    let mut appender = vector::VectorF32XorAppender::try_new(VECTOR_LENGTH * 2).unwrap();
+    inputs.iter().for_each(|&a| appender.append(a as f32 / 1.4).unwrap());
     appender.finish(VECTOR_LENGTH).unwrap()
 }
 
@@ -222,6 +228,21 @@ fn bench_filter_u64_vect(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_filter_f32_vect(c: &mut Criterion) {
+    let mut group = c.benchmark_group("f32 vector filtering");
+    group.throughput(Throughput::Elements(VECTOR_LENGTH as u64));
+
+    let dense_vect = dense_lowcard_f32_vector();
+    let dense_reader = vector::VectorReader::<f32>::try_new(&dense_vect[..]).unwrap();
+
+    group.bench_function("lowcard 60% density", |b| b.iter(|| {
+        let filter_iter = dense_reader.filter_iter(filter::EqualsSink::<f32>::new(&3.0));
+        filter::count_hits(filter_iter);
+    }));
+
+    group.finish();
+}
+
 const BATCH_SIZE: usize = 100;
 
 fn repack_2d_deltas(c: &mut Criterion) {
@@ -262,6 +283,7 @@ criterion_group!(benches, //nibblepack8_varlen,
                           section32_decode_dense_varnumbits,
                           bench_filter_vect,
                           bench_filter_u64_vect,
+                          bench_filter_f32_vect,
                           // repack_2d_deltas,
                           );
 criterion_main!(benches);
