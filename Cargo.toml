@@ -14,9 +14,9 @@ keywords = ["compression", "data-structures", "simd", "columnar", "float"]
 memoffset = "0.5"
 plain = "0.2.3"
 scroll = { version = "0.10", features = ["derive"] }
-arrayref = "*"
+arrayref = "0.3"
 enum_dispatch = "0.2"
-num = "*"
+num = "0.3"
 smallvec = "1.4"
 num_enum = "0.5"
 
