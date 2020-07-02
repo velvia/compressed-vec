@@ -3,6 +3,12 @@ name = "compressed_vec"
 version = "0.1.0"
 authors = ["Evan Chan <velvia@gmail.com>"]
 edition = "2018"
+description = "Floating point and integer compressed vector library, SIMD-enabled for fast processing/iteration over compressed representations."
+license = "Apache-2.0"
+readme = "README.md"
+repository = "https://github.com/velvia/compressed-vec"
+categories = ["compression", "data-structures", "encoding"]
+keywords = ["compression", "data-structures", "simd", "columnar", "float"]
 
 [dependencies]
 memoffset = "0.5"

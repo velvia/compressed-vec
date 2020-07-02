@@ -1,4 +1,4 @@
-//! ## Compressed-Vec
+//! ## compressed_vec
 //!
 //! Floating point and integer compressed vector library, SIMD-enabled for fast processing/iteration over compressed representations.
 //!
@@ -68,7 +68,7 @@
 //!
 //! ### Vector Format
 //!
-//! Details of the vector format can be found [here](vector_format.md).
+//! Details of the vector format can be found [here](https://github.com/velvia/compressed-vec/blob/main/vector_format.md).
 //!
 //! The vector format follows columnar compression techniques used throughout the big data and database world, and roughly follows the Google [Procella](https://blog.acolyer.org/2019/09/11/procella/) paper with its custom Artus format:
 //!

@@ -4,3 +4,4 @@
 /*.svg
 /Cargo.lock
 .DS_Store
+perf.data
