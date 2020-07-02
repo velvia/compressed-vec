@@ -287,14 +287,14 @@ where F: VectBase + Float,      // Output floating point type
 /// This sink is also used for decoding Delta-encoded u64/u32 values, then passing the output to another sink.
 #[derive(Debug)]
 pub struct AddConstSink<'a, T, S>
-where T: VectBase + Unsigned,
+where T: VectBase,
       S: Sink<T::SI> {
     base: T::SI,
     inner_sink: &'a mut S,
 }
 
 impl<'a, T, S> AddConstSink<'a, T, S>
-where T: VectBase + Unsigned,
+where T: VectBase,
       S: Sink<T::SI> {
     pub fn new(base: T, inner_sink: &'a mut S) -> Self {
         Self { base: T::SI::splat(base), inner_sink }
@@ -302,7 +302,7 @@ where T: VectBase + Unsigned,
 }
 
 impl<'a, T, S> Sink<T::SI> for AddConstSink<'a, T, S>
-where T: VectBase + Unsigned,
+where T: VectBase,
       S: Sink<T::SI>,
       T::SI: Add<T::SI, Output = T::SI> {
     #[inline]
