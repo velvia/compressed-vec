@@ -1,11 +1,10 @@
 ## compressed_vec
 
-Floating point and integer compressed vector library, SIMD-enabled for fast processing/iteration over compressed representations.
+[![crate](https://img.shields.io/crates/v/compressed_vec.svg)](https://crates.io/crates/compressed_vec)
+[![documentation](https://docs.rs/compressed_vec/badge.svg)](https://docs.rs/compressed_vec)
+[![CircleCI](https://circleci.com/gh/velvia/compressed-vec.svg?style=shield)](https://circleci.com/gh/velvia/compressed-vec)
 
-```
-[dependencies]
-compressed_vec = "0.1"
-```
+Floating point and integer compressed vector library, SIMD-enabled for fast processing/iteration over compressed representations.
 
 This is a *compressed vec* library, rather than a *compression* library.  What does that mean?  A compression library takes some uncompressed data and provides essentially compress() and decompress() functions.  Typically you have to decompress data to be able to do anything with it, resulting in extra latency and allocations.
 
