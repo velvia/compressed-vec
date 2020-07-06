@@ -66,7 +66,7 @@ For example, let's say that we want to add 2.5 to the f32 vector above, and then
 
 ### Vector Format
 
-Details of the vector format can be found [here](vector_format.md).
+Details of the vector format can be found [here](https://github.com/velvia/compressed-vec/blob/main/vector_format.md).
 
 The vector format follows columnar compression techniques used throughout the big data and database world, and roughly follows the Google [Procella](https://blog.acolyer.org/2019/09/11/procella/) paper with its custom Artus format:
 
