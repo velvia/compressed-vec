@@ -6,7 +6,7 @@
 ///
 use core::marker::PhantomData;
 
-use packed_simd::u32x8;
+use packed_simd_2::u32x8;
 use smallvec::SmallVec;
 
 use crate::section::*;

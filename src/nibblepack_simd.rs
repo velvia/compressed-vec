@@ -9,7 +9,7 @@ use crate::error::CodingError;
 use crate::nibblepacking::*;
 use crate::sink::*;
 
-use packed_simd::{shuffle, u64x8, u32x8, m32x8, isizex8, cptrx8};
+use packed_simd_2::{shuffle, u64x8, u32x8, m32x8, isizex8, cptrx8};
 
 
 const ZEROES_U64X8: u64x8 = u64x8::splat(0);

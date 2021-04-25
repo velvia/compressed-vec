@@ -81,7 +81,6 @@
 //!     * The use of sections allows for many optimizations for filtering.  For example, null sections and constant sections allow for very fast filter short-circuiting.
 
 
-#![feature(slice_fill)]
 #![feature(associated_type_defaults)]
 
 #[macro_use]

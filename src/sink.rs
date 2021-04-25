@@ -11,7 +11,7 @@ use std::ops::{Add, BitXor};
 use crate::section::VectBase;
 
 use num::{Zero, Unsigned, Float};
-use packed_simd::{u32x8, u64x8, f32x8, FromCast, FromBits, IntoBits};
+use packed_simd_2::{u32x8, u64x8, f32x8, FromCast, FromBits, IntoBits};
 
 /// An input to a sink.  Sinks take a type which represents 8 values of an int, such as [u64; 8].
 /// Item type represents the underlying type of each individual item in the 8 item SinkInput.
