@@ -21,7 +21,7 @@ smallvec = "1.4"
 num_enum = "0.5"
 
 # TODO: put this behind a feature flag
-packed_simd_2 = { version = "0.3.4", features = ["into_bits"] }
+packed_simd = { version = "0.3.9", features = ["into_bits"] }
 
 [dev-dependencies]
 criterion = "0.3"
