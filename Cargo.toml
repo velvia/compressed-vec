@@ -1,6 +1,6 @@
 [package]
 name = "compressed_vec"
-version = "0.1.1"
+version = "0.1.0"
 authors = ["Evan Chan <velvia@gmail.com>"]
 edition = "2021"
 description = "Floating point and integer compressed vector library, SIMD-enabled for fast processing/iteration over compressed representations."
