@@ -815,6 +815,7 @@ impl<'buf, T: VectBase> FixedSection for ConstFixedSect<'buf, T> {
 /// 1. If min==max, use a Constant or Null section
 /// 2. If min-max range uses less nibbles than otherwise for max, then Delta is a win.
 /// 3. Otherwise use standard NibblePackMedFixedSect
+#[derive(Clone)]
 pub struct AutoEncoder {}
 
 impl<'buf, T> FixedSectionWriter<T> for AutoEncoder
