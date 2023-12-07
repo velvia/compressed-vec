@@ -49,7 +49,7 @@ use crate::sink::*;
 /// defined here.
 /// The major and minor types and the header bytes are compatible with FiloDB BinaryVectors.
 #[repr(C)]
-#[derive(Debug, Clone, PartialEq, Pwrite)]
+#[derive(Debug, PartialEq, Pwrite)]
 pub struct BinaryVector {
     num_bytes: u32,         // Number of bytes in vector following this length
     major_type: VectorType, // These should probably be enums no?
@@ -203,7 +203,6 @@ const GROW_BYTES: usize = 4096;
 ///      let mut appender = VectorF32XorAppender::try_new(2048).unwrap();
 ///      let bytes = appender.encode_all(my_vec).unwrap();
 /// ```
-#[derive(Debug, Clone)]
 pub struct VectorAppender<T, W>
 where T: VectBase + Clone + PartialOrd,
       W: FixedSectionWriter<T> {
