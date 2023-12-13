@@ -1,4 +1,4 @@
-use packed_simd_2::{u32x8, u64x8, FromCast};
+use packed_simd::{u32x8, u64x8, FromCast};
 
 use crate::error::CodingError;
 use crate::byteutils::*;

@@ -20,7 +20,7 @@ use std::convert::TryFrom;
 use enum_dispatch::enum_dispatch;
 use num::{PrimInt, Unsigned, Num, Bounded, Float};
 use num_enum::{TryFromPrimitive, TryFromPrimitiveError};
-use packed_simd_2::{u32x8, u64x8, f32x8};
+use packed_simd::{u32x8, u64x8, f32x8};
 use scroll::{ctx, Endian, Pread, Pwrite, LE};
 
 
@@ -815,6 +815,7 @@ impl<'buf, T: VectBase> FixedSection for ConstFixedSect<'buf, T> {
 /// 1. If min==max, use a Constant or Null section
 /// 2. If min-max range uses less nibbles than otherwise for max, then Delta is a win.
 /// 3. Otherwise use standard NibblePackMedFixedSect
+#[derive(Clone)]
 pub struct AutoEncoder {}
 
 impl<'buf, T> FixedSectionWriter<T> for AutoEncoder

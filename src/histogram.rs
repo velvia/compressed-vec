@@ -1,4 +1,4 @@
-use packed_simd_2::u64x8;
+use packed_simd::u64x8;
 use plain::Plain;
 use crate::nibblepacking::*;
 use crate::sink::Sink;

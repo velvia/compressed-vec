@@ -1,8 +1,8 @@
 [package]
 name = "compressed_vec"
-version = "0.1.0"
+version = "0.1.1"
 authors = ["Evan Chan <velvia@gmail.com>"]
-edition = "2018"
+edition = "2021"
 description = "Floating point and integer compressed vector library, SIMD-enabled for fast processing/iteration over compressed representations."
 license = "Apache-2.0"
 readme = "README.md"
@@ -13,15 +13,15 @@ keywords = ["compression", "data-structures", "simd", "columnar", "float"]
 [dependencies]
 memoffset = "0.6.3"
 plain = "0.2.3"
-scroll = { version = "0.10", features = ["derive"] }
-arrayref = "0.3"
-enum_dispatch = "0.3.5"
-num = "0.3"
-smallvec = "1.4"
-num_enum = "0.5"
+scroll = { version = "0.11", features = ["derive"] }
+arrayref = "0.3.7"
+enum_dispatch = "0.3.12"
+num = "0.4.1"
+smallvec = "1.11.2"
+num_enum = "0.7.1"
 
 # TODO: put this behind a feature flag
-packed_simd_2 = { version = "0.3.4", features = ["into_bits"] }
+packed_simd = { version = "0.3.9", features = ["into_bits"] }
 
 [dev-dependencies]
 criterion = "0.3"
